@@ -5,7 +5,7 @@
   "description": "Thread Pocket 的后端服务：Domain / Thread / Item / Note / Log 的 REST API。",
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "main": "src/index.js",
   "scripts": {

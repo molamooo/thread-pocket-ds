@@ -41,9 +41,10 @@ console.log(`[thread-pocket] auth: ${describeAuth(app)}`);
 console.log(`[thread-pocket] web console: http://${host}:${port}/`);
 console.log(`[thread-pocket] MCP endpoint: ${baseUrl}/mcp`);
 
+const linkFile = path.resolve(path.dirname(dbFile), "setup-link.txt");
+
 if (app.setupToken && !app.auth.store.initialized()) {
   const link = `${baseUrl}/auth/setup#token=${encodeURIComponent(app.setupToken)}`;
-  const linkFile = path.resolve(path.dirname(dbFile), "setup-link.txt");
   try {
     fs.writeFileSync(linkFile, `${link}\n`, { mode: 0o600 });
   } catch (error) {
@@ -56,6 +57,13 @@ if (app.setupToken && !app.auth.store.initialized()) {
   console.log("");
 } else if (!app.auth.store.initialized()) {
   console.log("[thread-pocket] 还没有账号；本机可直接访问 /auth/setup 完成初始化。");
+} else {
+  // 账号已建立：一次性凭证文件已经没有用处，留着只会多一份残留密钥。
+  try {
+    fs.rmSync(linkFile, { force: true });
+  } catch {
+    /* 删不掉也不影响运行 */
+  }
 }
 
 function describeAuth(app) {

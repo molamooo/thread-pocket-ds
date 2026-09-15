@@ -170,7 +170,11 @@ create table if not exists auth_rate_limits (
 
 export function openDatabase(file = ":memory:") {
   if (file !== ":memory:") {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const directory = path.dirname(file);
+    if (!fs.existsSync(directory)) {
+      // 只在自己创建目录时收紧权限，不去动已经存在的目录
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
   }
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -179,7 +183,22 @@ export function openDatabase(file = ":memory:") {
   db.exec(AUTH_SCHEMA);
   migrate(db);
   bootstrap(db);
+  if (file !== ":memory:") restrictPermissions(file);
   return db;
+}
+
+/**
+ * 数据库里存着账号口令哈希与令牌哈希，虽然都是哈希，也没必要让本机其他用户读到。
+ * WAL 模式下会额外产生 -wal / -shm，一并收紧。
+ */
+function restrictPermissions(file) {
+  for (const target of [file, `${file}-wal`, `${file}-shm`]) {
+    try {
+      if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
+    } catch {
+      /* 可能不是文件所有者（例如由 systemd 以其他用户创建），跳过 */
+    }
+  }
 }
 
 /** 就地升级已有数据库，不动用户数据。 */
