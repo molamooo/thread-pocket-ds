@@ -98,3 +98,27 @@ curl -s -i -X POST $BASE/mcp -H 'content-type: application/json' \
 
 三条都符合预期后，再用桌面端登录一次、让一个 MCP 客户端连一次，
 最后回到 `/auth/connections` 确认授权列表里只有你认识的客户端。
+
+## 首次初始化
+
+启动日志里会打印一次性链接，**要完整复制，包括 `#` 后面的部分**：
+
+```
+https://pocket.example.com/auth/setup#token=tp_setup_xxx
+```
+
+凭证在 `#` 之后，浏览器不会把它发给服务器，所以它不会出现在反向代理的访问日志里。
+页面会在浏览器端把它填进表单，提交时才做校验。
+
+打不开页面（显示 403 或找不到凭证）时：
+
+1. 确认 `#token=...` 这一整段都在；
+2. 链接丢了就在服务器上 `cd /opt/thread-pocket/server && npm run setup:link -- --print`；
+3. 文件也没了，就用固定凭证重启：
+   ```bash
+   THREADPOCKET_SETUP_TOKEN=$(openssl rand -hex 24) systemctl restart thread-pocket
+   journalctl -u thread-pocket -n 5      # 会用这个凭证打印链接
+   ```
+
+账号建好之后：一次性凭证立即作废，链接文件会被自动删除，
+再打开 `/auth/setup` 返回 409，API 开始要求登录。

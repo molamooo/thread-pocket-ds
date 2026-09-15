@@ -569,17 +569,10 @@ export function createAuthRoutes({ store, config, logger = console }) {
       );
     }
     const embedded = isLocalOnlyRequest(req);
+    // 链接里的凭证通常在 # 之后，服务端读不到；这里只负责把页面渲染出来，
+    // 真正的校验在 POST。允许无凭证渲染是安全的：页面本身不含任何数据，
+    // 提交仍需正确的一次性凭证，且 setup 端点有按 IP 的限流。
     const token = String(query.token ?? "");
-    if (!embedded && !store.verifySetupToken(token)) {
-      return html(
-        403,
-        messagePage({
-          title: "需要初始化凭证",
-          message: "该部署不是本机访问，初始化需要启动时打印的一次性链接。可用 npm run setup:link 获取。",
-          tone: "error",
-        }),
-      );
-    }
     return html(200, setupPage({ token, embedded }));
   }
 
@@ -595,7 +588,15 @@ export function createAuthRoutes({ store, config, logger = console }) {
     }
     const embedded = isLocalOnlyRequest(req);
     if (!embedded && !store.verifySetupToken(String(body.token ?? ""))) {
-      return html(403, messagePage({ title: "凭证无效", message: "初始化链接无效或已过期。", tone: "error" }));
+      return html(
+        403,
+        messagePage({
+          title: "凭证无效或缺失",
+          message:
+            "初始化需要启动时打印的一次性链接（凭证在链接的 # 之后，请完整复制）。也可在服务器上运行 npm run setup:link 重新获取。",
+          tone: "error",
+        }),
+      );
     }
     const email = String(body.email ?? "").trim();
     const password = String(body.password ?? "");

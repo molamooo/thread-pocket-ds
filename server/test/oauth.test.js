@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { authorizeClient, bootstrapOwner, exchangeCode, login, startServer } from "./support.mjs";
 
@@ -390,6 +393,79 @@ describe("部署形态与兜底", () => {
     assert.equal(created.status, 302);
     assert.ok(ctx.app.auth.store.initialized());
     await ctx.close();
+  });
+
+  it("对外部署：页面能打开并在浏览器端接住 # 里的凭证", async () => {
+    const ctx = await startServer({ env: { THREADPOCKET_PUBLIC_URL: "https://pocket.example.com", HOST: "0.0.0.0" } });
+    const page = await ctx.request("/auth/setup");
+    // 纯 GET 没有凭证也必须能渲染：凭证在链接的 # 之后，服务端看不到
+    assert.equal(page.status, 200);
+    assert.ok(page.text.includes("创建个人账号"));
+    assert.ok(page.text.includes("location.hash"), "页面需要从 fragment 里取凭证");
+    assert.ok(page.text.includes('id="setup-token"'));
+    assert.ok(!page.text.includes("tp_setup_"), "页面本身不能带任何凭证");
+    await ctx.close();
+  });
+
+  it("对外部署：表单提交仍然必须带正确凭证", async () => {
+    const ctx = await startServer({ env: { THREADPOCKET_PUBLIC_URL: "https://pocket.example.com", HOST: "0.0.0.0" } });
+    const noToken = await ctx.request("/auth/setup", {
+      method: "POST",
+      form: true,
+      body: { email: "owner@example.com", password: "enough-length-password" },
+    });
+    assert.equal(noToken.status, 403);
+    assert.equal(ctx.app.auth.store.initialized(), false, "没有凭证不能创建账号");
+
+    const wrong = await ctx.request("/auth/setup", {
+      method: "POST",
+      form: true,
+      body: { email: "owner@example.com", password: "enough-length-password", token: "tp_setup_wrong" },
+    });
+    assert.equal(wrong.status, 403);
+
+    const ok = await ctx.request("/auth/setup", {
+      method: "POST",
+      form: true,
+      body: { email: "owner@example.com", password: "enough-length-password", token: ctx.app.setupToken },
+    });
+    assert.equal(ok.status, 302);
+    assert.equal(ctx.app.auth.store.initialized(), true);
+
+    const again = await ctx.request("/auth/setup");
+    assert.equal(again.status, 409, "初始化后不再开放该页面");
+    await ctx.close();
+  });
+
+  it("显式设置 THREADPOCKET_SETUP_TOKEN 时可以恢复丢失的链接", async () => {
+    const first = await startServer({ env: { THREADPOCKET_PUBLIC_URL: "https://pocket.example.com", HOST: "0.0.0.0" } });
+    const generated = first.app.setupToken;
+    assert.ok(generated);
+    await first.close();
+    // 同一个库重启：换成显式指定的凭证
+    const dbFile = path.join(os.tmpdir(), `thread-pocket-setup-${Date.now()}.sqlite`);
+    const a = await startServer({ env: { THREADPOCKET_PUBLIC_URL: "https://pocket.example.com", HOST: "0.0.0.0" }, dbFile });
+    const oldToken = a.app.setupToken;
+    await a.close();
+    const b = await startServer({
+      env: { THREADPOCKET_PUBLIC_URL: "https://pocket.example.com", HOST: "0.0.0.0", THREADPOCKET_SETUP_TOKEN: "my-own-setup-token" },
+      dbFile,
+    });
+    assert.equal(b.app.setupToken, "my-own-setup-token");
+    const withOld = await b.request("/auth/setup", {
+      method: "POST",
+      form: true,
+      body: { email: "owner@example.com", password: "enough-length-password", token: oldToken },
+    });
+    assert.equal(withOld.status, 403, "旧凭证应当失效");
+    const withNew = await b.request("/auth/setup", {
+      method: "POST",
+      form: true,
+      body: { email: "owner@example.com", password: "enough-length-password", token: "my-own-setup-token" },
+    });
+    assert.equal(withNew.status, 302);
+    await b.close();
+    fs.rmSync(dbFile, { force: true });
   });
 
   it("静态密钥依旧可用（脚本与本地自动化）", async () => {

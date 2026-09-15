@@ -168,8 +168,17 @@ export function createAuthStore(db, config) {
         q.setupDelete.run();
         return null;
       }
-      if (q.setupGet.get()) return null;
-      const token = config.setupToken ?? newSetupToken();
+      const existing = q.setupGet.get();
+      // 显式指定了凭证就总是以它为准：链接丢了也能靠重新部署/env 恢复
+      if (config.setupToken) {
+        if (!existing || existing.token_hash !== hashToken(config.setupToken)) {
+          q.setupDelete.run();
+          q.setupInsert.run(newId("su"), hashToken(config.setupToken), nowIso());
+        }
+        return config.setupToken;
+      }
+      if (existing) return null;
+      const token = newSetupToken();
       q.setupInsert.run(newId("su"), hashToken(token), nowIso());
       return token;
     },

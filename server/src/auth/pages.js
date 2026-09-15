@@ -84,7 +84,30 @@ export function messagePage({ title, message, tone = "ok", actions = "" }) {
 }
 
 export function setupPage({ token, error = null, embedded = false }) {
-  const hidden = token && !embedded ? `<input type="hidden" name="token" value="${escapeHtml(token)}" />` : "";
+  // 初始化链接把凭证放在 URL 的 # 之后：浏览器不会把 fragment 发给服务器，
+  // 因此它不会出现在反向代理的访问日志里。代价是服务端渲染时读不到它，
+  // 需要在页面上用一小段脚本把它填进表单，真正的校验发生在 POST。
+  const hidden = embedded ? "" : `<input type="hidden" name="token" id="setup-token" value="${escapeHtml(token ?? "")}" />`;
+  const script = embedded
+    ? ""
+    : `
+    <script>
+      (function () {
+        var field = document.getElementById("setup-token");
+        if (!field) return;
+        var pick = function (raw) {
+          if (!raw) return "";
+          var text = raw.charAt(0) === "#" || raw.charAt(0) === "?" ? raw.slice(1) : raw;
+          try { return new URLSearchParams(text).get("token") || ""; } catch (error) { return ""; }
+        };
+        var token = pick(location.hash) || pick(location.search);
+        if (token && !field.value) field.value = token;
+        // 地址栏里不再留下凭证
+        if (location.hash.indexOf("token=") !== -1) {
+          history.replaceState(null, "", location.pathname);
+        }
+      })();
+    </script>`;
   return layout({
     title: "初始化账号",
     body: `
@@ -102,10 +125,11 @@ export function setupPage({ token, error = null, embedded = false }) {
       </div>
       <div class="msg error">${escapeHtml(error ?? "")}</div>
     </form>
+    ${script}
     <div class="foot">${
       embedded
         ? "本机首次初始化：只有这台机器能访问该页面。"
-        : "该页面只接受带一次性凭证的访问；凭证在服务启动时打印，也可用 npm run setup:link 重新获取。"
+        : "凭证在服务启动时打印，也可用 npm run setup:link 重新获取。它只用于这一次初始化。"
     }</div>`,
   });
 }

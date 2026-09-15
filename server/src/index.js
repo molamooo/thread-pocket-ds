@@ -56,7 +56,23 @@ if (app.setupToken && !app.auth.store.initialized()) {
   console.log(`[thread-pocket] 链接同时保存在 ${linkFile}，可用 npm run setup:link 再次获取。`);
   console.log("");
 } else if (!app.auth.store.initialized()) {
-  console.log("[thread-pocket] 还没有账号；本机可直接访问 /auth/setup 完成初始化。");
+  // 凭证已生成过（数据库里有记录），但这次启动拿不到明文，只能沿用之前写下的链接
+  let existing = null;
+  try {
+    existing = fs.readFileSync(linkFile, "utf8").trim();
+  } catch {
+    /* 没有文件 */
+  }
+  console.log("");
+  if (existing) {
+    console.log("[thread-pocket] 还没有账号。沿用上次生成的初始化链接（只建立一次）：");
+    console.log(`[thread-pocket]   ${existing}`);
+  } else {
+    console.log("[thread-pocket] 还没有账号，但初始化凭证已经生成过、链接文件也不在了。");
+    console.log("[thread-pocket] 处理方式：设置 THREADPOCKET_SETUP_TOKEN=<自定随机串> 后重启，");
+    console.log("[thread-pocket]   然后访问 https://<你的域名>/auth/setup#token=<该随机串>。");
+  }
+  console.log("");
 } else {
   // 账号已建立：一次性凭证文件已经没有用处，留着只会多一份残留密钥。
   try {
