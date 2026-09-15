@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thread Pocket · API 控制台</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090b12;
+        --panel: rgba(255, 255, 255, 0.045);
+        --panel-strong: rgba(255, 255, 255, 0.08);
+        --line: rgba(255, 255, 255, 0.1);
+        --text: #eef1f8;
+        --muted: #8d94a8;
+        --accent: #7c8cff;
+        --accent-soft: rgba(124, 140, 255, 0.16);
+        --radius: 16px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(1200px 600px at 10% -10%, rgba(124, 140, 255, 0.22), transparent 60%),
+          radial-gradient(900px 500px at 100% 0%, rgba(255, 138, 190, 0.16), transparent 55%),
+          var(--bg);
+        color: var(--text);
+        font: 14px/1.55 -apple-system, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+        padding: 32px 28px 64px;
+      }
+      header { max-width: 1180px; margin: 0 auto 22px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .logo {
+        width: 42px; height: 42px; border-radius: 12px;
+        background: linear-gradient(150deg, #7c8cff, #b98cff 60%, #ff8abe);
+        display: grid; place-items: center; font-size: 20px;
+        box-shadow: 0 10px 30px rgba(124, 140, 255, 0.35);
+      }
+      h1 { font-size: 19px; margin: 0; letter-spacing: 0.2px; }
+      .sub { color: var(--muted); font-size: 12.5px; }
+      .spacer { flex: 1; }
+      .pill {
+        border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+        padding: 6px 12px; border-radius: 999px; font-size: 12px;
+        display: inline-flex; align-items: center; gap: 7px;
+      }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 10px #4ade80; }
+      .dot.bad { background: #f87171; box-shadow: 0 0 10px #f87171; }
+      main { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+      section {
+        background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 18px 18px 20px; backdrop-filter: blur(20px);
+      }
+      section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin: 0 0 14px; font-weight: 600; }
+      .thread { padding: 11px 12px; border-radius: 12px; border: 1px solid transparent; }
+      .thread:hover { background: var(--panel-strong); border-color: var(--line); }
+      .thread .title { font-weight: 600; }
+      .thread .summary { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+      .thread .meta { color: #6f7688; font-size: 11.5px; margin-top: 6px; }
+      .item { display: flex; gap: 9px; align-items: flex-start; padding: 5px 0; font-size: 13px; }
+      .mark { width: 14px; height: 14px; border-radius: 5px; margin-top: 3px; background: var(--accent-soft); border: 1px solid var(--line); flex: none; }
+      .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      input, select, button {
+        font: inherit; color: var(--text); background: rgba(255,255,255,0.06);
+        border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px;
+      }
+      button { cursor: pointer; transition: transform 0.16s ease, background 0.16s ease; }
+      button:hover { background: var(--accent-soft); transform: translateY(-1px); }
+      select option { background: #14161f; }
+      code { background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      td { padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+      td:first-child { color: var(--muted); white-space: nowrap; }
+      .empty { color: var(--muted); font-size: 12.5px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo">🧵</div>
+      <div>
+        <h1>Thread Pocket · API 控制台</h1>
+        <div class="sub">同一个后端也可以直接被 Web 或移动端复用</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="pill" id="status"><span class="dot"></span><span id="status-text">连接中…</span></div>
+    </header>
+
+    <main>
+      <section>
+        <h2>快速收集</h2>
+        <div class="row" style="margin-bottom: 10px">
+          <select id="domain-select" style="flex: 1"></select>
+        </div>
+        <div class="row">
+          <input id="capture-title" placeholder="记一下…" style="flex: 1" />
+          <button id="capture-btn">收下</button>
+        </div>
+        <p class="empty" style="margin: 12px 0 0">
+          内容会进入所选 Domain 的收件箱（Inbox Thread），与桌面端共享同一份数据。
+        </p>
+        <div id="inbox-preview" style="margin-top: 12px"></div>
+      </section>
+
+      <section>
+        <h2>Threads</h2>
+        <div id="threads"></div>
+      </section>
+
+      <section>
+        <h2>今天</h2>
+        <div id="today"></div>
+      </section>
+
+      <section>
+        <h2>接口一览</h2>
+        <table>
+          <tr><td>GET</td><td><code>/api/v1/snapshot</code> 全量快照（桌面端首屏）</td></tr>
+          <tr><td>GET</td><td><code>/api/v1/threads/:id</code> Thread 上下文 + 事项 + 笔记 + 日志</td></tr>
+          <tr><td>GET</td><td><code>/api/v1/views/today | actions | inbox</code> 总览三个入口</td></tr>
+          <tr><td>POST</td><td><code>/api/v1/threads/:id/items</code> 新增待办 / 日程 / 方向 / 等待</td></tr>
+          <tr><td>PATCH</td><td><code>/api/v1/items/:id</code> 改期、完成、解除、改归属</td></tr>
+          <tr><td>PUT</td><td><code>/api/v1/threads/:id/note</code> 自由笔记</td></tr>
+          <tr><td>POST</td><td><code>/api/v1/threads/:id/logs</code> 记录一条进展</td></tr>
+        </table>
+      </section>
+    </main>
+
+    <script type="module">
+      const api = {
+        async call(path, options = {}) {
+          const res = await fetch(path, {
+            headers: { "content-type": "application/json" },
+            ...options,
+            body: options.body ? JSON.stringify(options.body) : undefined,
+          });
+          const text = await res.text();
+          const payload = text ? JSON.parse(text) : null;
+          if (!res.ok) throw new Error(payload?.error?.message ?? res.statusText);
+          return payload;
+        },
+      };
+
+      const el = (id) => document.getElementById(id);
+      const KIND_LABEL = { task: "待办", event: "日程", direction: "方向", wait: "等待" };
+
+      let domains = [];
+
+      function setStatus(ok, text) {
+        el("status").querySelector(".dot").className = ok ? "dot" : "dot bad";
+        el("status-text").textContent = text;
+      }
+
+      async function refresh() {
+        const [snapshot, today] = await Promise.all([api.call("/api/v1/snapshot"), api.call("/api/v1/views/today")]);
+        domains = snapshot.domains;
+
+        el("domain-select").innerHTML = domains
+          .map((d) => `<option value="${d.id}">${d.name}</option>`)
+          .join("");
+
+        const inboxIds = new Set(snapshot.threads.filter((t) => t.is_inbox && !t.trashed_at).map((t) => t.id));
+        const byThread = new Map();
+        for (const item of snapshot.items) {
+          if (item.status !== "open") continue;
+          if (!byThread.has(item.thread_id)) byThread.set(item.thread_id, []);
+          byThread.get(item.thread_id).push(item);
+        }
+
+        el("threads").innerHTML =
+          snapshot.threads
+            .filter((t) => !t.is_inbox && !t.trashed_at)
+            .map((thread) => {
+              const items = byThread.get(thread.id) ?? [];
+              return `<div class="thread">
+                <div class="title">${thread.title}</div>
+                <div class="summary">${thread.summary || "—"}</div>
+                <div class="meta">${(byThread.get(thread.id) ?? []).length} 项未结束 · ${
+                  domains.find((d) => d.id === thread.domain_id)?.name ?? ""
+                }</div>
+                ${items
+                  .slice(0, 4)
+                  .map(
+                    (item) =>
+                      `<div class="item"><span class="mark"></span><span>${item.title} <span class="tag">${
+                        KIND_LABEL[item.kind]
+                      }</span></span></div>`,
+                  )
+                  .join("")}
+              </div>`;
+            })
+            .join("") || '<p class="empty">还没有 Thread</p>';
+
+        const inboxItems = snapshot.items.filter((i) => inboxIds.has(i.thread_id) && i.status === "open");
+        el("inbox-preview").innerHTML =
+          inboxItems.map((i) => `<div class="item"><span class="mark"></span><span>${i.title} <span class="tag">${KIND_LABEL[i.kind]}</span></span></div>`).join("") ||
+          '<p class="empty">收件箱是空的</p>';
+
+        el("today").innerHTML = today.groups.length
+          ? today.groups
+              .map(
+                (group) => `<div style="margin-bottom:12px">
+                  <div class="meta" style="margin-bottom:4px">${group.title} · ${group.count}</div>
+                  ${group.entries
+                    .map(
+                      (entry) =>
+                        `<div class="item"><span class="mark"></span><span>${entry.item.title} <span class="tag">${
+                          entry.thread?.title ?? ""
+                        }</span></span></div>`,
+                    )
+                    .join("")}
+                </div>`,
+              )
+              .join("")
+          : '<p class="empty">今天没有需要处理的内容</p>';
+      }
+
+      el("capture-btn").addEventListener("click", async () => {
+        const input = el("capture-title");
+        const title = input.value.trim();
+        if (!title) return;
+        const domainId = el("domain-select").value;
+        const { threads } = await api.call(`/api/v1/threads?domain_id=${encodeURIComponent(domainId)}`);
+        const inbox = threads.find((t) => t.is_inbox);
+        if (!inbox) return;
+        await api.call(`/api/v1/threads/${inbox.id}/items`, {
+          method: "POST",
+          body: { kind: "task", title },
+        });
+        input.value = "";
+        await refresh();
+      });
+
+      el("capture-title").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") el("capture-btn").click();
+      });
+
+      api
+        .call("/health")
+        .then((health) => setStatus(true, `已连接 · ${new Date(health.server_time).toLocaleTimeString()}`))
+        .catch((error) => setStatus(false, `未连接 · ${error.message}`));
+
+      refresh().catch((error) => setStatus(false, `加载失败 · ${error.message}`));
+    </script>
+  </body>
+</html>

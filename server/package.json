@@ -1,0 +1,25 @@
+{
+  "name": "thread-pocket-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Thread Pocket 的后端服务：Domain / Thread / Item / Note / Log 的 REST API。",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/seed.js",
+    "reset": "node src/seed.js --reset",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "keywords": [
+    "thread-pocket",
+    "rest-api",
+    "sqlite"
+  ],
+  "license": "MIT"
+}

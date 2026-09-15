@@ -1,0 +1,15 @@
+# SwiftPM / Xcode
+macos/.build/
+macos/dist/
+macos/.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# 后端运行时数据
+server/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# macOS
+.DS_Store
