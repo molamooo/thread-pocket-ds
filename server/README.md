@@ -10,7 +10,8 @@ npm start          # 默认 http://127.0.0.1:8787
 npm run dev        # --watch 模式
 npm run seed       # 写入演示数据
 npm run reset      # 清空并重建演示数据
-npm test           # 27 个接口 / 视图 / 鉴权测试
+npm run setup:link # 打印/打开首次初始化账号的链接（对外部署时用）
+npm test           # 79 个接口 / OAuth / MCP 测试
 ```
 
 环境变量：
@@ -21,8 +22,14 @@ npm test           # 27 个接口 / 视图 / 鉴权测试
 | `HOST` | `127.0.0.1` | 监听地址，容器中通常设为 `0.0.0.0` |
 | `THREADPOCKET_DB` | `server/data/thread-pocket.sqlite` | 数据库文件 |
 | `THREADPOCKET_API_KEY` | 空 | 设置后，除 `/health` 与 `/api/v1/meta` 外都需要 Bearer 令牌 |
+| `THREADPOCKET_PUBLIC_URL` | 空 | 对外 origin（如 `https://pocket.example.com`）；设置后所有请求都要凭证 |
+| `THREADPOCKET_TRUST_LOOPBACK` | `0` | 设为 `1` 时本机请求可免登录（纯本机开发） |
+| `THREADPOCKET_CIMD_HOSTS` | `chatgpt.com,claude.ai,claude.com` | 允许读取客户端元数据文档的主机 |
 
 `GET /` 提供内置 Web 控制台（读取同一份数据，并支持快速收集）。
+
+绑定到非回环地址、又没有任何鉴权时服务会**拒绝启动**；
+确需临时试探可设 `THREADPOCKET_ALLOW_INSECURE=1`。设计说明见仓库根目录的 [AUTH.md](../AUTH.md)。
 
 ## 数据模型
 
@@ -140,6 +147,59 @@ npm test
 
 覆盖：健康检查与元信息、Domain/Thread 生命周期、四类事项的创建与状态流转、
 日志与笔记、三个视图的分组与去重、收件箱聚合、搜索、鉴权、持久化。
+
+## MCP
+
+`POST /mcp` 上是自己实现的 MCP（Streamable HTTP，无状态，不依赖任何 MCP SDK）。
+它在 `initialize` 的 `instructions` 里返回**完整的工具使用说明**（即原先独立分发的 Skill 内容），
+因此接入方不需要再安装 Skill 包。
+
+| 工具 | 用途 |
+| --- | --- |
+| `list_domains` | 列出关注范围与各自的收件箱 |
+| `list_threads` | 按关键词 / Domain / 状态分页查找线索 |
+| `resolve_thread` | 把用户口述的主题解析成确切的 Thread（同名线索 → 同名 Domain 的收件箱 → 按需新建） |
+| `get_thread` | 读取当前描述、未结束与已结束条目、笔记、最近日志，并返回 `revision` |
+| `create_thread` | 新建线索 |
+| `update_thread` | 更新标题 / 当前描述 / 状态 / 归属 / 归档 |
+| `upsert_entries` | 批量写入 1–200 条条目，单事务，支持 `expected_revision` 乐观并发 |
+| `update_entry` / `delete_entry` / `move_entry` | 单条更新、删除、跨线索移动 |
+| `append_log` | 记录已经发生的结果与判断，可带 `occurred_at` |
+| `write_note` | 覆盖这条线索的唯一一份自由笔记 |
+| `list_overview` | 今天 / 行动 / 收件箱三个视图 |
+| `search` | 跨线索搜索 |
+
+并发控制：每条 Thread 有 `revision`，任何写入都会 +1。Agent 先 `get_thread` 拿到 revision，
+再带着它写入；版本不一致返回 `409 revision_conflict`，并提示先重新读取再合并。
+
+### MCP 鉴权
+
+`/mcp` 需要 `mcp:tools`。未授权时返回：
+
+```
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="thread-pocket",
+  resource_metadata="https://<origin>/.well-known/oauth-protected-resource/mcp",
+  scope="mcp:tools"
+```
+
+客户端据此完成发现、注册与授权（支持动态注册与客户端元数据文档两种方式）。
+
+## OAuth 端点
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/.well-known/oauth-authorization-server` | 授权服务器元信息（RFC 8414） |
+| GET | `/.well-known/oauth-protected-resource[/mcp\|/api]` | 资源元信息（RFC 9728） |
+| POST | `/oauth/register` | 动态客户端注册（仅公共客户端） |
+| GET/POST | `/oauth/authorize` | 授权码 + PKCE(S256)，POST 为同意/拒绝 |
+| POST | `/oauth/token` | `authorization_code` / `refresh_token`（刷新即轮换） |
+| POST | `/oauth/revoke` | 撤销令牌 |
+| POST | `/oauth/introspect` | 自省（仅本机或静态密钥） |
+| GET/POST | `/auth/login` `/auth/setup` `/auth/connections` | 登录、初始化、管理已授权客户端 |
+
+scope：`threads:read`、`threads:write`、`mcp:tools`、`offline_access`。
+缺少权限返回 `403 insufficient_scope` 并在挑战里指出缺哪个 scope。
 
 ## 部署示例
 

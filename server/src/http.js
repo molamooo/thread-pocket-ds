@@ -48,15 +48,8 @@ export function createRouter() {
 }
 
 export async function readJsonBody(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, "请求体过大", "payload_too_large");
-    chunks.push(chunk);
-  }
-  if (size === 0) return {};
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw = await readRawBody(req);
+  if (raw === null) return {};
   try {
     const parsed = JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -69,12 +62,48 @@ export async function readJsonBody(req) {
   }
 }
 
-export function sendJson(res, status, payload) {
+export async function readRawBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, "请求体过大", "payload_too_large");
+    chunks.push(chunk);
+  }
+  if (size === 0) return null;
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * 同时接受 JSON 与表单编码：OAuth 端点按规范用表单，
+ * 应用与测试更习惯 JSON，两者都支持可以少很多边界问题。
+ */
+export async function readAnyBody(req) {
+  const raw = await readRawBody(req);
+  if (raw === null) return {};
+  const contentType = String(req.headers["content-type"] ?? "").toLowerCase();
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new HttpError(400, "请求体需要是 JSON 对象或表单", "bad_request");
+    }
+    return parsed;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, "请求体不是合法 JSON", "bad_request");
+  }
+}
+
+export function sendJson(res, status, payload, headers = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...headers,
   });
   res.end(body);
 }
@@ -91,7 +120,11 @@ export function sendText(res, status, body, contentType = "text/plain; charset=u
 export function applyCors(res) {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
-  res.setHeader("access-control-allow-headers", "content-type,authorization,x-api-key");
+  res.setHeader(
+    "access-control-allow-headers",
+    "content-type,authorization,x-api-key,mcp-session-id,mcp-protocol-version,last-event-id",
+  );
+  res.setHeader("access-control-expose-headers", "mcp-session-id,mcp-protocol-version");
   res.setHeader("access-control-max-age", "86400");
 }
 

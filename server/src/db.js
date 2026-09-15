@@ -23,6 +23,7 @@ create table if not exists threads (
   status text not null default 'active',
   is_inbox integer not null default 0,
   position integer not null default 0,
+  revision integer not null default 1,
   archived_at text,
   trashed_at text,
   created_at text not null,
@@ -75,6 +76,98 @@ create index if not exists idx_items_due on items(due_date);
 create index if not exists idx_logs_thread on log_entries(thread_id, created_at);
 `;
 
+/**
+ * 账号与授权。与业务数据分表，但共用同一个 SQLite 文件，因此备份即复制一个文件。
+ */
+const AUTH_SCHEMA = `
+create table if not exists auth_users (
+  id text primary key,
+  email text not null unique,
+  name text not null default 'Owner',
+  password_hash text not null,
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists auth_sessions (
+  token_hash text primary key,
+  user_id text not null references auth_users(id) on delete cascade,
+  user_agent text,
+  created_at text not null,
+  expires_at text not null
+);
+
+create index if not exists idx_auth_sessions_user on auth_sessions(user_id);
+
+-- OAuth 客户端：来自动态注册、客户端元数据文档（CIMD）或环境变量预注册
+create table if not exists oauth_clients (
+  id text primary key,
+  name text not null,
+  redirect_uris text not null,
+  scopes text not null,
+  source text not null default 'dcr',
+  metadata_url text,
+  created_at text not null,
+  last_used_at text
+);
+
+-- 授权码：只存哈希，短有效期，一次性
+create table if not exists oauth_codes (
+  code_hash text primary key,
+  client_id text not null references oauth_clients(id) on delete cascade,
+  user_id text not null references auth_users(id) on delete cascade,
+  redirect_uri text not null,
+  scopes text not null,
+  code_challenge text not null,
+  code_challenge_method text not null,
+  resource text,
+  created_at text not null,
+  expires_at text not null,
+  consumed_at text
+);
+
+-- 访问令牌与刷新令牌：只存哈希
+create table if not exists oauth_tokens (
+  token_hash text primary key,
+  kind text not null,
+  client_id text not null,
+  user_id text not null,
+  scopes text not null,
+  family_id text not null,
+  created_at text not null,
+  expires_at text not null,
+  revoked_at text,
+  replaced_by text
+);
+
+create index if not exists idx_oauth_tokens_family on oauth_tokens(family_id);
+create index if not exists idx_oauth_tokens_user on oauth_tokens(user_id);
+
+-- 已授权的连接：用于「跳过重复授权确认」与「撤销某个客户端的访问」
+create table if not exists oauth_consents (
+  client_id text not null,
+  user_id text not null,
+  scopes text not null,
+  created_at text not null,
+  last_used_at text not null,
+  primary key (client_id, user_id)
+);
+
+-- 首次初始化凭证：只在还没有账号时存在
+create table if not exists auth_setup (
+  id text primary key,
+  token_hash text not null,
+  created_at text not null
+);
+
+-- 速率限制计数（登录、注册、令牌端点）
+create table if not exists auth_rate_limits (
+  bucket text primary key,
+  count integer not null,
+  window_started_at text not null
+);
+`;
+
 export function openDatabase(file = ":memory:") {
   if (file !== ":memory:") {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -83,8 +176,18 @@ export function openDatabase(file = ":memory:") {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+  db.exec(AUTH_SCHEMA);
+  migrate(db);
   bootstrap(db);
   return db;
+}
+
+/** 就地升级已有数据库，不动用户数据。 */
+function migrate(db) {
+  const columns = db.prepare("pragma table_info(threads)").all().map((row) => row.name);
+  if (!columns.includes("revision")) {
+    db.exec("alter table threads add column revision integer not null default 1");
+  }
 }
 
 const DEFAULT_DOMAINS = [

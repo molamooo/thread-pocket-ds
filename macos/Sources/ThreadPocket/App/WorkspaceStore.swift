@@ -136,6 +136,8 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var connection: ConnectionState = .idle
     @Published private(set) var inFlight = 0
     @Published private(set) var unavailableReason: String?
+    @Published private(set) var authState: AuthState = .unknown
+    @Published private(set) var isSigningIn = false
 
     // 视图状态
     @Published var selectedThreadID: String?
@@ -171,8 +173,32 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    enum AuthState: Equatable {
+        case unknown
+        case open
+        case signedIn(account: String?, backend: CredentialStore.Backend)
+        case signedOut
+        case expired(String)
+
+        var label: String {
+            switch self {
+            case .unknown: "未检测"
+            case .open: "无需登录"
+            case .signedIn(let account, _): account ?? "已登录"
+            case .signedOut: "未登录"
+            case .expired: "登录已失效"
+            }
+        }
+
+        var isSignedIn: Bool {
+            if case .signedIn = self { return true }
+            return false
+        }
+    }
+
     let settings: AppSettings
     let overlay: OverlayCenter
+    let oauth = OAuthClient()
     private(set) var client: APIClient?
     private var refreshTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
@@ -197,6 +223,90 @@ final class WorkspaceStore: ObservableObject {
         settings.normalizedURL?.absoluteString ?? settings.serverURL
     }
 
+    var serverOrigin: String? {
+        settings.normalizedURL.map { OAuthClient.origin(of: $0) }
+    }
+
+    // MARK: - 登录状态
+
+    /// 桌面端优先使用 OAuth 令牌；没有登录时退回手动填写的静态密钥。
+    private var credential: CredentialStore.StoredCredential? {
+        guard let origin = serverOrigin else { return nil }
+        return oauth.cached(for: origin)
+    }
+
+    private var effectiveToken: String? {
+        if let credential { return credential.accessToken }
+        let manual = settings.token.trimmed
+        return manual.isEmpty ? nil : manual
+    }
+
+    func refreshAuthState() {
+        if credential != nil {
+            authState = .signedIn(account: credential?.account, backend: credential?.backend ?? .file)
+        } else if !settings.token.trimmed.isEmpty {
+            authState = .signedIn(account: "静态令牌", backend: .file)
+        }
+    }
+
+    func signIn() async {
+        guard let url = settings.normalizedURL else {
+            overlay.toast("请先填写有效的服务器地址", tone: .warning)
+            return
+        }
+        isSigningIn = true
+        defer { isSigningIn = false }
+        do {
+            let credential = try await oauth.signIn(baseURL: url)
+            authState = .signedIn(account: credential.account, backend: credential.backend)
+            overlay.toast(
+                "已登录\(credential.account.map { "：\($0)" } ?? "")",
+                tone: .success,
+                detail: credential.backend == .keychain ? "令牌存放在钥匙串" : "钥匙串不可用，令牌暂存在本机加密文件"
+            )
+            await connect()
+        } catch {
+            authState = .signedOut
+            overlay.toast("登录失败", tone: .failure, detail: error.localizedDescription)
+        }
+    }
+
+    func signOut() {
+        if let origin = serverOrigin { oauth.signOut(for: origin) }
+        authState = .signedOut
+        overlay.toast("已退出登录", tone: .neutral)
+        Task { await connect() }
+    }
+
+    /// 令牌快过期就先刷新；服务端返回 invalid_token 时刷新并重试一次。
+    private func refreshCredentialIfNeeded(force: Bool = false) async throws {
+        guard let origin = serverOrigin, var current = credential else { return }
+        let expiring = current.expiresAt.timeIntervalSinceNow < 90
+        guard force || expiring else { return }
+        current = try await oauth.refresh(current, origin: origin)
+        authState = .signedIn(account: current.account, backend: current.backend)
+    }
+
+    private func withAuthorizedClient<T>(_ operation: (APIClient) async throws -> T) async throws -> T {
+        guard let client else { throw APIError.badURL(settings.serverURL) }
+        try? await refreshCredentialIfNeeded()
+        client.token = effectiveToken
+        do {
+            return try await operation(client)
+        } catch let error as APIError {
+            guard case .server(let status, _, _) = error, status == 401 else { throw error }
+            guard credential != nil else { throw error }
+            do {
+                try await refreshCredentialIfNeeded(force: true)
+            } catch {
+                authState = .expired("登录已失效，请重新登录")
+                throw error
+            }
+            client.token = effectiveToken
+            return try await operation(client)
+        }
+    }
+
     func connect(showToast: Bool = false) async {
         rebuildClient()
         guard let client else {
@@ -204,10 +314,13 @@ final class WorkspaceStore: ObservableObject {
             return
         }
         connection = .connecting
+        refreshAuthState()
         do {
             let health: HealthResponse = try await client.get("/health")
             _ = health
-            let snapshot: Snapshot = try await client.get("/api/v1/snapshot")
+            let snapshot: Snapshot = try await withAuthorizedClient { client in
+                try await client.get("/api/v1/snapshot")
+            }
             apply(snapshot: snapshot)
             connection = .online(Date())
             unavailableReason = nil
@@ -220,6 +333,21 @@ final class WorkspaceStore: ObservableObject {
                 overlay.toast("已连接到 \(serverLabel)", tone: .success)
             }
         } catch let error as APIError {
+            if case .server(let status, _, _) = error, status == 401 {
+                authState = credential == nil ? .signedOut : .expired("登录已失效，请重新登录")
+                connection = .offline("需要登录")
+                unavailableReason = "需要登录后才能读取你的线索。"
+                if showToast {
+                    overlay.toast(
+                        "需要登录",
+                        tone: .warning,
+                        detail: "这个部署开启了鉴权。点右侧按钮用浏览器登录，或在连接设置里填写访问令牌。",
+                        actionLabel: "登录",
+                        action: { [weak self] in Task { await self?.signIn() } }
+                    )
+                }
+                return
+            }
             connection = .offline(error.errorDescription ?? "连接失败")
             unavailableReason = error.errorDescription
             if showToast {
@@ -251,9 +379,11 @@ final class WorkspaceStore: ObservableObject {
 
     /// 后台轻量刷新：不改变当前选择，失败时保留现有内容。
     func softRefresh() async {
-        guard let client, connection.isOnline, inFlight == 0 else { return }
+        guard client != nil, connection.isOnline, inFlight == 0 else { return }
         do {
-            let snapshot: Snapshot = try await client.get("/api/v1/snapshot")
+            let snapshot: Snapshot = try await withAuthorizedClient { client in
+                try await client.get("/api/v1/snapshot")
+            }
             apply(snapshot: snapshot, preservingSelection: true)
             connection = .online(Date())
             await refreshOverview()
@@ -491,19 +621,30 @@ final class WorkspaceStore: ObservableObject {
         successMessage: String? = nil,
         operation: (APIClient) async throws -> Void
     ) async {
-        guard let client else {
+        guard client != nil else {
             overlay.toast("还没有可用的服务器地址", tone: .failure, detail: "在设置里填写后端 URL 后重试。")
             return
         }
         inFlight += 1
         defer { inFlight -= 1 }
         do {
-            try await operation(client)
+            try await withAuthorizedClient { client in try await operation(client) }
             if let successMessage {
                 overlay.toast(successMessage, tone: .success)
             }
             if !connection.isOnline { connection = .online(Date()) }
         } catch let error as APIError {
+            if case .server(let status, _, _) = error, status == 401 {
+                authState = credential == nil ? .signedOut : .expired("登录已失效，请重新登录")
+                overlay.toast(
+                    "需要登录",
+                    tone: .warning,
+                    detail: "访问令牌无效或已过期。",
+                    actionLabel: "登录",
+                    action: { [weak self] in Task { await self?.signIn() } }
+                )
+                return
+            }
             if error.isConnectivityIssue { connection = .offline(error.errorDescription ?? "连接中断") }
             overlay.toast(
                 "\(label)失败",
@@ -649,6 +790,33 @@ final class WorkspaceStore: ObservableObject {
         await refreshOverview()
     }
 
+    // MARK: - Domain 操作
+
+    func deleteDomain(_ domain: Domain) async {
+        await perform("删除领域", successMessage: "已删除「\(domain.name)」") { client in
+            let _: EmptyResponse = try await client.delete("/api/v1/domains/\(domain.id)")
+            if self.selectedDomainID == domain.id { self.selectedDomainID = nil }
+        }
+        await connect()
+    }
+
+    func saveDomain(_ domain: Domain?, name: String, color: String) async {
+        await perform(domain == nil ? "新建领域" : "更新领域", successMessage: domain == nil ? "已建立「\(name)」" : "已更新「\(name)」") { client in
+            if let domain {
+                let _: DomainMutationResponse = try await client.patch(
+                    "/api/v1/domains/\(domain.id)",
+                    body: ["name": name, "color": color]
+                )
+            } else {
+                let _: DomainMutationResponse = try await client.post(
+                    "/api/v1/domains",
+                    body: ["name": name, "color": color]
+                )
+            }
+        }
+        await connect()
+    }
+
     // MARK: - 事项操作
 
     func createItem(
@@ -764,7 +932,7 @@ final class WorkspaceStore: ObservableObject {
     // MARK: - 总览
 
     func refreshOverview() async {
-        guard let client, connection.isOnline || unavailableReason == nil else { return }
+        guard client != nil, connection.isOnline || unavailableReason == nil else { return }
         var base: [String: QueryValue] = [:]
         if let domainId = selectedDomainID { base["domain_id"] = .string(domainId) }
         let query = base
@@ -773,9 +941,9 @@ final class WorkspaceStore: ObservableObject {
         actionQuery["range"] = .string(rangeFilter.rawValue)
         let actionsQuery = actionQuery
         do {
-            async let today: TodayView = client.get("/api/v1/views/today", query: query)
-            async let actions: ActionsView = client.get("/api/v1/views/actions", query: actionsQuery)
-            async let inbox: InboxView = client.get("/api/v1/views/inbox", query: query)
+            async let today: TodayView = withAuthorizedClient { try await $0.get("/api/v1/views/today", query: query) }
+            async let actions: ActionsView = withAuthorizedClient { try await $0.get("/api/v1/views/actions", query: actionsQuery) }
+            async let inbox: InboxView = withAuthorizedClient { try await $0.get("/api/v1/views/inbox", query: query) }
             todayView = try await today
             actionsView = try await actions
             inboxView = try await inbox
@@ -799,9 +967,11 @@ final class WorkspaceStore: ObservableObject {
         }
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 220_000_000)
-            guard !Task.isCancelled, let self, let client = self.client else { return }
+            guard !Task.isCancelled, let self, self.client != nil else { return }
             do {
-                let results: SearchResponse = try await client.get("/api/v1/search", query: ["q": .string(query)])
+                let results: SearchResponse = try await self.withAuthorizedClient { client in
+                    try await client.get("/api/v1/search", query: ["q": .string(query)])
+                }
                 guard !Task.isCancelled else { return }
                 self.searchResults = results
             } catch {

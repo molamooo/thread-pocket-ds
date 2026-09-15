@@ -61,8 +61,30 @@ struct SettingsPanel: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
-                    label("访问令牌（可选）", hint: "后端设置了 THREADPOCKET_API_KEY 时才需要填写")
-                    PocketField(placeholder: "留空表示不需要鉴权", text: $token, symbol: "key")
+                    label("账号", hint: "用浏览器登录后即可读写这个部署里的线索；令牌只保存在本机")
+                    HStack(spacing: 8) {
+                        accountBadge
+                        Spacer()
+                        if store.authState.isSignedIn {
+                            PocketButton(label: "退出登录", symbol: "rectangle.portrait.and.arrow.right", kind: .ghost) {
+                                store.signOut()
+                            }
+                        } else {
+                            PocketButton(
+                                label: store.isSigningIn ? "等待浏览器…" : "使用浏览器登录",
+                                symbol: "safari",
+                                kind: .primary,
+                                isEnabled: !store.isSigningIn
+                            ) {
+                                Task { await store.signIn() }
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    label("访问令牌（可选）", hint: "给脚本或自动化使用；后端设置了 THREADPOCKET_API_KEY 时填这里")
+                    PocketField(placeholder: "留空表示用上面的登录状态", text: $token, symbol: "key")
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -117,6 +139,30 @@ struct SettingsPanel: View {
             url = settings.serverURL
             token = settings.token
             autoRefresh = settings.autoRefreshSeconds
+        }
+    }
+
+    @ViewBuilder
+    private var accountBadge: some View {
+        switch store.authState {
+        case .signedIn(let account, let backend):
+            VStack(alignment: .leading, spacing: 2) {
+                PocketTag(label: account ?? "已登录", symbol: "checkmark.seal.fill", tint: PocketTheme.success)
+                Text(backend == .keychain ? "令牌存放在钥匙串" : "钥匙串不可用，令牌保存在本机 0600 文件")
+                    .font(.system(size: 10))
+                    .foregroundStyle(PocketTheme.textTertiary)
+            }
+        case .expired(let reason):
+            VStack(alignment: .leading, spacing: 2) {
+                PocketTag(label: "登录已失效", symbol: "exclamationmark.triangle.fill", tint: PocketTheme.warning)
+                Text(reason).font(.system(size: 10)).foregroundStyle(PocketTheme.textTertiary)
+            }
+        case .signedOut:
+            PocketTag(label: "未登录", symbol: "person.crop.circle", tint: PocketTheme.textTertiary)
+        case .open:
+            PocketTag(label: "该部署未启用鉴权", symbol: "lock.open", tint: PocketTheme.textSecondary)
+        case .unknown:
+            PocketTag(label: "未检测", symbol: "questionmark.circle", tint: PocketTheme.textTertiary)
         }
     }
 

@@ -44,11 +44,12 @@ export function isDateTime(value) {
 }
 
 export class HttpError extends Error {
-  constructor(status, message, code = "error", details = undefined) {
+  constructor(status, message, code = "error", details = undefined, headers = undefined) {
     super(message);
     this.status = status;
     this.code = code;
     this.details = details;
+    this.headers = headers;
   }
 }
 

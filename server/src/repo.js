@@ -5,6 +5,7 @@ import {
   badRequest,
   bool,
   conflict,
+  HttpError,
   newId,
   notFound,
   nowIso,
@@ -44,6 +45,7 @@ export function serializeThread(row) {
     status: row.status,
     is_inbox: bool(row.is_inbox),
     position: row.position,
+    revision: row.revision ?? 1,
     archived: row.archived_at !== null && row.archived_at !== undefined,
     archived_at: row.archived_at ?? null,
     trashed_at: row.trashed_at ?? null,
@@ -123,7 +125,8 @@ export function createRepository(db) {
       "insert into threads (id, domain_id, title, summary, status, is_inbox, position, created_at, updated_at) values (?,?,?,?,?,?,?,?,?)",
     ),
     threadMaxPosition: db.prepare("select coalesce(max(position), -1) as p from threads where domain_id = ?"),
-    threadTouch: db.prepare("update threads set updated_at = ? where id = ?"),
+    threadTouch: db.prepare("update threads set updated_at = ?, revision = revision + 1 where id = ?"),
+    threadRevision: db.prepare("select revision from threads where id = ?"),
     threadDelete: db.prepare("delete from threads where id = ?"),
     threadByDomain: db.prepare(`${THREAD_SELECT} where t.domain_id = ? order by t.position asc, t.created_at asc`),
 
@@ -181,6 +184,28 @@ export function createRepository(db) {
   function touch(threadId, stamp = nowIso()) {
     q.threadTouch.run(stamp, threadId);
     return stamp;
+  }
+
+  function revisionOf(threadId) {
+    return q.threadRevision.get(threadId)?.revision ?? null;
+  }
+
+  /**
+   * 乐观并发：Agent 读取 Thread 后必须带上当时的 revision。
+   * 期间若有人改过，就抛出冲突，让调用方先重新读取再决定，避免覆盖别人的修改。
+   */
+  function assertRevision(threadId, expected) {
+    if (expected === null || expected === undefined) return;
+    const current = revisionOf(threadId);
+    if (current === null) throw notFound("Thread 不存在");
+    if (Number(expected) !== Number(current)) {
+      throw new HttpError(
+        409,
+        `Thread 已被修改（当前 revision ${current}，请求基于 ${expected}）`,
+        "revision_conflict",
+        { current_revision: current, expected_revision: Number(expected) },
+      );
+    }
   }
 
   function threadBundle(id) {
@@ -399,7 +424,17 @@ export function createRepository(db) {
       throw badRequest(`事项类型需要是 ${ITEM_KINDS.join(" / ")} 之一`);
     }
     const stamp = nowIso();
-    const id = newId(input.kind === "task" ? "tk" : input.kind === "event" ? "ev" : input.kind === "wait" ? "wt" : "dr");
+    const defaultPrefix = input.kind === "task" ? "tk" : input.kind === "event" ? "ev" : input.kind === "wait" ? "wt" : "dr";
+    let id;
+    if (input.id !== undefined && input.id !== null) {
+      id = String(input.id).trim();
+      if (!/^[A-Za-z0-9_-]{3,64}$/.test(id)) {
+        throw badRequest("事项 id 只能包含字母、数字、下划线和连字符，长度 3–64");
+      }
+      if (q.itemById.get(id)) throw conflict(`事项 id 已存在：${id}`);
+    } else {
+      id = newId(defaultPrefix);
+    }
     const position = (q.itemMaxPosition.get(threadId).p ?? -1) + 1;
     const row = {
       thread_id: threadId,
@@ -571,6 +606,55 @@ export function createRepository(db) {
     addLog(row.thread_id, { action: "item.deleted", text: `删除了${kindLabel(row.kind)}：${row.title}` });
   }
 
+  /**
+   * 批量写入：Agent 常用的一次性提交多个条目。
+   * 整批在同一个事务里完成，要么全部成功，要么全部不生效。
+   */
+  function upsertEntries(threadId, entries, { expectedRevision = null, actor = "agent", order = null } = {}) {
+    getThreadRowOrThrow(threadId);
+    return withTransaction(db, () => {
+      assertRevision(threadId, expectedRevision);
+      const written = [];
+      for (const entry of entries) {
+        const existing = entry.id ? q.itemById.get(entry.id) : null;
+        if (existing && existing.thread_id !== threadId) {
+          throw conflict(`事项 ${entry.id} 属于其他 Thread，请使用 move_entry`);
+        }
+        if (existing) {
+          const patch = {};
+          for (const key of [
+            "kind",
+            "title",
+            "detail",
+            "planDate",
+            "dueDate",
+            "startAt",
+            "endAt",
+            "followUpDate",
+            "blocked",
+            "blockerReason",
+            "status",
+          ]) {
+            if (entry[key] !== undefined) patch[key] = entry[key];
+          }
+          written.push(updateItem(existing.id, patch, { actor }));
+        } else {
+          written.push(createItem(threadId, { ...entry, actor }));
+        }
+      }
+      if (Array.isArray(order) && order.length > 0) {
+        order.forEach((itemId, index) => {
+          const row = q.itemById.get(itemId);
+          if (!row) throw badRequest(`排序里包含不存在的事项：${itemId}`);
+          if (row.thread_id !== threadId) throw badRequest(`排序里的事项不属于该 Thread：${itemId}`);
+          db.prepare("update items set position = ? where id = ?").run(index, itemId);
+        });
+        touch(threadId);
+      }
+      return { entries: written, bundle: threadBundle(threadId) };
+    });
+  }
+
   /** 探索方向 → 待办：保留来源，方向标记为已转化。 */
   function convertDirection(id, { title = null, planDate = null, dueDate = null } = {}) {
     const row = getItemOrThrow(id);
@@ -685,6 +769,7 @@ export function createRepository(db) {
     createItem,
     updateItem,
     deleteItem,
+    upsertEntries,
     convertDirection,
     listItems,
     getNote,
@@ -694,6 +779,8 @@ export function createRepository(db) {
     addLog,
     snapshot,
     search,
+    revisionOf,
+    assertRevision,
     getThreadRowOrThrow,
     getItemOrThrow,
     getDomainOrThrow,

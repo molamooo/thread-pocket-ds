@@ -28,6 +28,9 @@ Sources/ThreadPocket/
 │   └── WorkspaceStore.swift     状态中枢：快照、草稿、变更、视图、搜索
 ├── Model/Models.swift           与后端一一对应的数据结构与日期工具
 ├── Net/APIClient.swift          REST 客户端（snake_case 自动转换、错误归类）
+│   ├── OAuthClient.swift        发现授权服务器、动态注册、PKCE、换令牌与刷新
+│   ├── LoopbackCallbackServer.swift  127.0.0.1 随机端口的 OAuth 回调（RFC 8252）
+│   └── CredentialStore.swift    令牌存储：钥匙串优先，不可用时退回 0600 文件
 ├── Design/
 │   ├── PocketTheme.swift        颜色、圆角、玻璃质感
 │   ├── OverlayCenter.swift      提示、浮层、确认框、面板
@@ -66,3 +69,15 @@ Sources/ThreadPocket/
   客户端整体替换该 Thread 的本地状态。
 - 未保存的当前描述或笔记会被记录为草稿；切换线索时先确认，避免丢失。
 - 连接失败时保留本地视图并给出重试入口；写操作失败会提示并可直接重连。
+
+## 登录
+
+后端开启鉴权后（存在账号或配置了静态密钥），应用会显示「需要登录」并提供两个入口：
+
+- **使用浏览器登录**（推荐）：应用发现授权服务器 → 动态注册一次 →
+  在本机随机端口起回调 → 打开系统浏览器完成登录与授权 → 用授权码换令牌。
+  令牌存钥匙串，过期前自动用刷新令牌续期；服务端返回 `401 invalid_token` 时也会刷新并重试一次。
+- **填写令牌**：在连接设置里粘贴静态令牌，适合脚本化或后端只配了 `THREADPOCKET_API_KEY` 的场景。
+
+桌面端申请的 scope 是 `threads:read threads:write offline_access`，不申请 `mcp:tools`。
+可以随时在连接设置里「退出登录」，或在浏览器打开 `<服务器地址>/auth/connections` 撤销某个客户端的授权。

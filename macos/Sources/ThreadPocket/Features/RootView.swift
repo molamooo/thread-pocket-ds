@@ -277,7 +277,7 @@ struct DomainChips: View {
                                     destructive: true,
                                     onPrimary: {
                                         overlay.dismissConfirm()
-                                        Task { await deleteDomain(domain) }
+                                        Task { await store.deleteDomain(domain) }
                                     },
                                     onSecondary: { overlay.dismissConfirm() }
                                 )
@@ -301,19 +301,6 @@ struct DomainChips: View {
         }
     }
 
-    private func deleteDomain(_ domain: Domain) async {
-        guard let client = store.client else { return }
-        do {
-            let _: EmptyResponse = try await client.delete("/api/v1/domains/\(domain.id)")
-            if store.selectedDomainID == domain.id { store.selectedDomainID = nil }
-            await store.connect()
-            overlay.toast("已删除「\(domain.name)」", tone: .success)
-        } catch let error as APIError {
-            overlay.toast("删除失败", tone: .failure, detail: error.errorDescription)
-        } catch {
-            overlay.toast("删除失败", tone: .failure)
-        }
-    }
 }
 
 struct ConnectionPill: View {
@@ -456,7 +443,7 @@ struct OfflineBanner: View {
             Image(systemName: "bolt.horizontal.circle")
                 .foregroundStyle(PocketTheme.warning)
             VStack(alignment: .leading, spacing: 1) {
-                Text("未连接到后端")
+                Text(needsLogin ? "需要登录" : "未连接到后端")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(PocketTheme.textPrimary)
                 Text(reason)
@@ -464,14 +451,39 @@ struct OfflineBanner: View {
                     .foregroundStyle(PocketTheme.textSecondary)
                     .lineLimit(1)
             }
-            PocketButton(label: "重试", symbol: "arrow.clockwise", kind: .secondary) {
-                Task { await store.connect(showToast: true) }
+            if needsLogin {
+                PocketButton(
+                    label: store.isSigningIn ? "等待浏览器…" : "登录",
+                    symbol: "person.badge.key",
+                    kind: .primary,
+                    isEnabled: !store.isSigningIn
+                ) {
+                    Task { await store.signIn() }
+                }
+                PocketButton(label: "填写令牌", symbol: "key", kind: .ghost) {
+                    NotificationCenter.default.post(name: AppEvent.settings, object: nil)
+                }
+            } else {
+                PocketButton(label: "重试", symbol: "arrow.clockwise", kind: .secondary) {
+                    Task { await store.connect(showToast: true) }
+                }
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .glassPanel(radius: 14, fill: PocketTheme.warning.opacity(0.1))
         .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
+    }
+
+    private var needsLogin: Bool {
+        if case .signedIn = store.authState { return false }
+        if case .open = store.authState { return false }
+        return store.authState == .signedOut || isExpired
+    }
+
+    private var isExpired: Bool {
+        if case .expired = store.authState { return true }
+        return false
     }
 }
 

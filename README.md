@@ -10,8 +10,12 @@ thread-pocket-ds/
 ├── DESIGN.md           产品设计文档（概念层级、信息组织、使用范式）
 ├── server/             后端：零依赖 Node HTTP 服务 + SQLite，可独立部署
 │   ├── src/            db / repo / views / api / http / server
+│   │   ├── auth/       自实现的 OAuth 授权服务器（DCR + PKCE + 刷新轮换）
+│   │   └── mcp/        自实现的 MCP 服务（instructions 里内嵌 skill 说明）
 │   ├── public/         内置 Web 控制台（复用同一套 API）
-│   └── test/           27 个接口与视图行为测试
+│   └── test/           79 个接口 / OAuth / MCP 测试
+├── AUTH.md             鉴权与对外暴露设计
+├── docs/deploy.md      反向代理与部署自检
 └── macos/              macOS 客户端：SwiftUI，连接任意后端 URL
     ├── Sources/ThreadPocket/
     └── Scripts/build-app.sh
@@ -19,6 +23,7 @@ thread-pocket-ds/
 
 前后端通过 HTTP + JSON 通信。桌面端不内嵌任何业务逻辑的后端，只依赖一个可配置的服务器地址；
 Web / 移动端可以复用同一个部署（`server/public/index.html` 就是一个现成的例子）。
+Agent 通过 MCP 直接读写同一个工作区，鉴权与桌面端共用一套 OAuth。
 
 ---
 
@@ -50,6 +55,36 @@ open dist/ThreadPocket.app
 首次启动会看到连接引导：填写后端地址（默认 `http://127.0.0.1:8787`）并连接。
 之后随时可以用 `⌘,` 打开连接设置修改地址、令牌与自动刷新频率。
 
+### 3. 让 Agent 接入（MCP）
+
+后端在同一个地址上提供 MCP：`http://127.0.0.1:8787/mcp`。
+在客户端里填这个地址即可，**不需要再额外安装 Skill** —— 工具的用法说明会作为
+MCP 的 `instructions` 随 `initialize` 一起下发。
+
+```jsonc
+// 例如 Claude Desktop / 其他 MCP 客户端配置
+{ "mcpServers": { "thread-pocket": { "url": "http://127.0.0.1:8787/mcp" } } }
+```
+
+第一次连接时客户端会收到 `401` 与资源元信息挑战，随后自动完成
+「发现授权服务器 → 动态注册 → 打开浏览器登录 → 授权 → 拿到令牌」。
+授权范围是 `mcp:tools`，只能通过 MCP 工具读写，不能拿去调 REST API。
+
+## 鉴权
+
+服务同时是 OAuth 授权服务器与资源服务器，默认安全、本机好用：
+
+| 部署形态 | 行为 |
+| --- | --- |
+| 本机、还没有账号 | 开放，起来就能用 |
+| 本机、已有账号 | 需要登录（浏览器会话）或令牌；`⌘,` 里点「使用浏览器登录」一次即可 |
+| 对外地址（设了 `THREADPOCKET_PUBLIC_URL`） | 所有请求都要凭证；本机豁免被强制关闭 |
+| 绑定到非回环地址却没有任何鉴权 | **拒绝启动**，避免把个人数据裸奔到公网 |
+
+要点：只接受公共客户端 + PKCE(S256)；令牌在库里只存哈希；刷新即轮换，
+旧刷新令牌被重放会让整个令牌族作废；桌面端走 RFC 8252 的回环回调，
+令牌存钥匙串。完整设计见 [AUTH.md](AUTH.md)，部署检查见 [docs/deploy.md](docs/deploy.md)。
+
 ---
 
 ## 功能范围
@@ -73,6 +108,8 @@ open dist/ThreadPocket.app
 | 搜索 | 顶部搜索框实时搜索线索与事项；`⌘K` 聚焦 |
 | 草稿保护 | 当前描述或笔记未保存时切换线索，会先问「保存并切换 / 放弃修改 / 留在原处」 |
 | 人与 Agent 共用语义 | 后端记录 `actor`，任何操作都留下可读日志，另一个参与者仅凭 Thread 就能理解现状 |
+| Agent 接入 | MCP（Streamable HTTP）14 个工具 + `instructions` 内置 skill 说明；OAuth 授权，无需手工发令牌 |
+| 登录 | 浏览器 OAuth（回环回调 + PKCE），令牌存钥匙串，过期自动用刷新令牌续期；也可填静态令牌给脚本用 |
 
 ### 交互约定
 

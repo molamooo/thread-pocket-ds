@@ -491,31 +491,10 @@ struct DomainEditorPanel: View {
     }
 
     private func submit() {
-        guard let client = store.client else { return }
         let value = name.trimmed
         isSaving = true
         onClose()
-        Task {
-            do {
-                if let domain {
-                    let _: DomainMutationResponse = try await client.patch(
-                        "/api/v1/domains/\(domain.id)",
-                        body: ["name": value, "color": color]
-                    )
-                } else {
-                    let _: DomainMutationResponse = try await client.post(
-                        "/api/v1/domains",
-                        body: ["name": value, "color": color]
-                    )
-                }
-                await store.connect()
-                overlay.toast(domain == nil ? "已建立「\(value)」" : "已更新「\(value)」", tone: .success)
-            } catch let error as APIError {
-                overlay.toast("保存失败", tone: .failure, detail: error.errorDescription)
-            } catch {
-                overlay.toast("保存失败", tone: .failure)
-            }
-        }
+        Task { await store.saveDomain(domain, name: value, color: color) }
     }
 }
 
