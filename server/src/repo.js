@@ -49,6 +49,7 @@ export function serializeThread(row) {
     archived: row.archived_at !== null && row.archived_at !== undefined,
     archived_at: row.archived_at ?? null,
     trashed_at: row.trashed_at ?? null,
+    pinned_at: row.pinned_at ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     counts,
@@ -107,6 +108,12 @@ select t.*,
 from threads t
 `;
 
+/**
+ * 线索列表的阅读顺序：置顶的排在最前，其余按人工排定的 position。
+ * position 只表达顺序，不表达时间，所以「最近更新」不再参与排序。
+ */
+const THREAD_ORDER = "order by (t.pinned_at is null) asc, t.position asc, t.created_at asc";
+
 export function createRepository(db) {
   const q = {
     domainById: db.prepare("select * from domains where id = ?"),
@@ -122,13 +129,15 @@ export function createRepository(db) {
 
     threadById: db.prepare(`${THREAD_SELECT} where t.id = ?`),
     threadInsert: db.prepare(
-      "insert into threads (id, domain_id, title, summary, status, is_inbox, position, created_at, updated_at) values (?,?,?,?,?,?,?,?,?)",
+      "insert into threads (id, domain_id, title, summary, status, is_inbox, position, pinned_at, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?)",
     ),
-    threadMaxPosition: db.prepare("select coalesce(max(position), -1) as p from threads where domain_id = ?"),
+    threadMinPosition: db.prepare("select coalesce(min(position), 1) as p from threads"),
+    threadMinPinnedPosition: db.prepare("select min(position) as p from threads where pinned_at is not null"),
+    threadPositionUpdate: db.prepare("update threads set position = ? where id = ?"),
     threadTouch: db.prepare("update threads set updated_at = ?, revision = revision + 1 where id = ?"),
     threadRevision: db.prepare("select revision from threads where id = ?"),
     threadDelete: db.prepare("delete from threads where id = ?"),
-    threadByDomain: db.prepare(`${THREAD_SELECT} where t.domain_id = ? order by t.position asc, t.created_at asc`),
+    threadByDomain: db.prepare(`${THREAD_SELECT} where t.domain_id = ? ${THREAD_ORDER}`),
 
     itemsByThread: db.prepare("select * from items where thread_id = ? order by position asc, created_at asc"),
     itemById: db.prepare("select * from items where id = ?"),
@@ -137,6 +146,7 @@ export function createRepository(db) {
         follow_up_date, blocked, blocker_reason, source_id, position, created_at, updated_at, closed_at)
       values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
     itemMaxPosition: db.prepare("select coalesce(max(position), -1) as p from items where thread_id = ?"),
+    itemPositionUpdate: db.prepare("update items set position = ? where id = ?"),
     itemUpdate: db.prepare(`
       update items set thread_id = ?, kind = ?, title = ?, status = ?, detail = ?, plan_date = ?, due_date = ?,
         start_at = ?, end_at = ?, follow_up_date = ?, blocked = ?, blocker_reason = ?, source_id = ?,
@@ -246,6 +256,7 @@ export function createRepository(db) {
       "active",
       1,
       0,
+      null,
       stamp,
       stamp,
     );
@@ -294,7 +305,7 @@ export function createRepository(db) {
       getDomainOrThrow(domainId);
       rows = q.threadByDomain.all(domainId);
     } else {
-      rows = db.prepare(`${THREAD_SELECT} order by t.position asc, t.created_at asc`).all();
+      rows = db.prepare(`${THREAD_SELECT} ${THREAD_ORDER}`).all();
     }
     return filterThreads(rows, { include, status, q: search }).map(serializeThread);
   }
@@ -303,7 +314,8 @@ export function createRepository(db) {
     const domain = getDomainOrThrow(input.domainId);
     const stamp = nowIso();
     const id = newId("th");
-    const position = (q.threadMaxPosition.get(domain.id).p ?? -1) + 1;
+    // 新线索排在最前：占用比现有最小 position 更小的值，不需要重排其他人。
+    const position = q.threadMinPosition.get().p - 1;
     const title = input.title;
     const isInbox = input.isInbox ? 1 : 0;
     q.threadInsert.run(
@@ -314,6 +326,7 @@ export function createRepository(db) {
       input.status ?? "active",
       isInbox,
       position,
+      null,
       stamp,
       stamp,
     );
@@ -328,6 +341,8 @@ export function createRepository(db) {
   function updateThread(id, patch) {
     const row = getThreadRowOrThrow(id);
     const stamp = nowIso();
+    const pinnedAt =
+      patch.pinned === undefined ? row.pinned_at ?? null : patch.pinned ? row.pinned_at ?? stamp : null;
     const next = {
       domain_id: patch.domainId ?? row.domain_id,
       title: patch.title ?? row.title,
@@ -337,7 +352,13 @@ export function createRepository(db) {
       position: patch.position ?? row.position,
       archived_at: patch.archived === undefined ? row.archived_at : patch.archived ? stamp : null,
       trashed_at: patch.trashed === undefined ? row.trashed_at : patch.trashed ? stamp : null,
+      pinned_at: pinnedAt,
     };
+    // 新置顶的线索落到置顶区最前，取消置顶则保持原来的相对顺序。
+    if (patch.pinned === true && !row.pinned_at) {
+      const pinnedMin = q.threadMinPinnedPosition.get().p;
+      next.position = (pinnedMin ?? q.threadMinPosition.get().p) - 1;
+    }
     if (patch.domainId) getDomainOrThrow(patch.domainId);
     if (next.status !== row.status) {
       if (!THREAD_STATUSES.includes(next.status)) {
@@ -346,7 +367,7 @@ export function createRepository(db) {
     }
     db.prepare(
       `update threads set domain_id = ?, title = ?, summary = ?, status = ?, is_inbox = ?, position = ?,
-        archived_at = ?, trashed_at = ?, updated_at = ? where id = ?`,
+        archived_at = ?, trashed_at = ?, pinned_at = ?, updated_at = ? where id = ?`,
     ).run(
       next.domain_id,
       next.title,
@@ -356,6 +377,7 @@ export function createRepository(db) {
       next.position,
       next.archived_at,
       next.trashed_at,
+      next.pinned_at,
       stamp,
       id,
     );
@@ -393,6 +415,36 @@ export function createRepository(db) {
   function deleteThread(id) {
     getThreadRowOrThrow(id);
     db.prepare("delete from threads where id = ?").run(id);
+  }
+
+  /* ---------------------------------- 排序 ---------------------------------- */
+
+  function normalizeIds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw badRequest("ids 需要是非空的 id 数组");
+    }
+    const list = ids.map((id) => String(id));
+    if (new Set(list).size !== list.length) throw badRequest("ids 里不能有重复的 id");
+    return list;
+  }
+
+  /**
+   * 人工排序：调用方给出希望的一段顺序，服务端把它们放回原先占据的位置槽上。
+   * 于是只改变这些条目的相对顺序，不会打乱没参与排序的内容——
+   * 这也是筛选后拖动（只看到一部分）仍然能得到预期结果的原因。
+   */
+  function applySlots(rows, ids, write) {
+    const slots = rows.map((row) => row.position).sort((a, b) => a - b);
+    return withTransaction(db, () => {
+      ids.forEach((id, index) => write(id, slots[index]));
+    });
+  }
+
+  function reorderThreads(ids) {
+    const list = normalizeIds(ids);
+    const rows = list.map((id) => getThreadRowOrThrow(id));
+    applySlots(rows, list, (id, position) => q.threadPositionUpdate.run(position, id));
+    return list.map((id) => serializeThread(q.threadById.get(id)));
   }
 
   /* ----------------------------------- items ---------------------------------- */
@@ -606,6 +658,18 @@ export function createRepository(db) {
     addLog(row.thread_id, { action: "item.deleted", text: `删除了${kindLabel(row.kind)}：${row.title}` });
   }
 
+  function reorderItems(threadId, ids) {
+    getThreadRowOrThrow(threadId);
+    const list = normalizeIds(ids);
+    const rows = list.map((id) => {
+      const row = getItemOrThrow(id);
+      if (row.thread_id !== threadId) throw badRequest(`事项 ${id} 不属于这条 Thread`);
+      return row;
+    });
+    applySlots(rows, list, (id, position) => q.itemPositionUpdate.run(position, id));
+    return list.map((id) => serializeItem(q.itemById.get(id)));
+  }
+
   /**
    * 批量写入：Agent 常用的一次性提交多个条目。
    * 整批在同一个事务里完成，要么全部成功，要么全部不生效。
@@ -727,7 +791,7 @@ export function createRepository(db) {
   function snapshot({ includeTrashed = true } = {}) {
     const domains = q.domainsAll.all().map(serializeDomain);
     const threads = db
-      .prepare(`${THREAD_SELECT} order by t.position asc, t.created_at asc`)
+      .prepare(`${THREAD_SELECT} ${THREAD_ORDER}`)
       .all()
       .map(serializeThread)
       .filter((thread) => includeTrashed || !thread.trashed_at);
@@ -767,9 +831,11 @@ export function createRepository(db) {
     createThread,
     updateThread,
     deleteThread,
+    reorderThreads,
     createItem,
     updateItem,
     deleteItem,
+    reorderItems,
     upsertEntries,
     convertDirection,
     listItems,

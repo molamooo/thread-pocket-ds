@@ -129,12 +129,14 @@ struct Thread: Identifiable, Codable, Hashable {
     var archived: Bool
     var archivedAt: String?
     var trashedAt: String?
+    var pinnedAt: String?
     var createdAt: String
     var updatedAt: String
     var counts: ThreadCounts?
 
     var countsOrEmpty: ThreadCounts { counts ?? .empty }
     var isTrashed: Bool { trashedAt != nil }
+    var isPinned: Bool { pinnedAt != nil }
 }
 
 struct Item: Identifiable, Codable, Hashable {
@@ -358,6 +360,15 @@ struct MoveResponse: Codable {
     var previousThreadId: String?
 }
 
+struct ThreadOrderResponse: Codable {
+    var threads: [Thread]
+}
+
+struct ItemReorderResponse: Codable {
+    var items: [Item]
+    var bundle: ThreadBundle?
+}
+
 struct LogsResponse: Codable {
     var logs: [LogEntry]
 }
@@ -418,6 +429,18 @@ enum DayKey {
         let base = date(from: key ?? today) ?? Date()
         let shifted = calendar.date(byAdding: .day, value: days, to: base) ?? base
         return self.key(from: shifted)
+    }
+
+    /// 周末：最近的那个周六；今天就是周六时返回今天。
+    static var weekend: String {
+        var candidate = today
+        for _ in 0..<8 {
+            if let date = date(from: candidate), calendar.component(.weekday, from: date) == 7 {
+                return candidate
+            }
+            candidate = add(days: 1, to: candidate)
+        }
+        return add(days: 6)
     }
 
     static func iso(key: String, hour: Int = 9, minute: Int = 0) -> String {

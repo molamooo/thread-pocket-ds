@@ -61,6 +61,9 @@ struct ItemRow: View {
     var thread: Thread
     var compact: Bool = false
     var showThreadLabel: Bool = false
+    /// 参与拖动排序时的上下文；为 nil 表示这一行不参与排序。
+    var dragScope: WorkspaceStore.DragScope?
+    var dragOrder: [String] = []
 
     @State private var isHovering = false
     @State private var isBusy = false
@@ -124,6 +127,12 @@ struct ItemRow: View {
         }
         .animation(PocketMotion.quick, value: isClosed)
         .pocketContextMenu { menuContent }
+        .reorderable(
+            id: item.id,
+            scope: dragScope ?? .items(threadId: item.threadId),
+            order: dragOrder,
+            isEnabled: dragScope != nil
+        )
     }
 
     @ViewBuilder
@@ -249,6 +258,20 @@ struct ItemRow: View {
     @ViewBuilder
     private var menuContent: some View {
         VStack(alignment: .leading, spacing: 1) {
+            // 第一行：横排的快捷时间
+            if let field = quickTimeField {
+                ContextQuickTimes(current: quickTimeKey, clearLabel: "清空") { key in
+                    Task {
+                        await store.updateItem(
+                            item,
+                            patch: quickTimePatch(key),
+                            message: key == nil ? "已清除\(field.label)" : "已改到\(DayKey.humanize(key ?? ""))"
+                        )
+                    }
+                }
+                ContextDivider()
+            }
+
             switch item.kind {
             case .task, .event:
                 ContextMenuItem(
@@ -291,18 +314,7 @@ struct ItemRow: View {
                         .environmentObject(overlay)
                 }
             }
-            if !moveTargets.isEmpty {
-                Text("移动到")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(PocketTheme.textTertiary)
-                    .padding(.horizontal, 9)
-                    .padding(.top, 4)
-                ForEach(moveTargets) { target in
-                    ContextMenuItem(label: moveLabel(target), symbol: "arrow.turn.up.right") {
-                        Task { await store.moveItem(item, toThread: target.id) }
-                    }
-                }
-            }
+            moveRow
             ContextDivider()
             ContextMenuItem(label: "复制标题", symbol: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
@@ -320,22 +332,93 @@ struct ItemRow: View {
         }
     }
 
-    private var moveTargets: [Thread] {
-        store.threads
-            .filter { $0.id != item.threadId && !$0.isTrashed && $0.archivedAt == nil }
-            .sorted { lhs, rhs in
-                if lhs.isInbox != rhs.isInbox { return !lhs.isInbox }
-                return lhs.updatedAt > rhs.updatedAt
+    /// 分级移动：一级「移动到」→ 二级 Domain → 三级 Thread。
+    @ViewBuilder
+    private var moveRow: some View {
+        ContextMenuSubmenuRow(label: "移动到", symbol: "arrow.turn.up.right") {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(store.domains) { domain in
+                    let targets = moveTargets(in: domain)
+                    ContextMenuSubmenuRow(
+                        label: domain.name,
+                        symbol: domain.symbol,
+                        detail: targets.isEmpty ? "没有其他线索" : "\(targets.count) 条",
+                        isDisabled: targets.isEmpty
+                    ) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            ForEach(targets) { target in
+                                ContextMenuItem(
+                                    label: target.title,
+                                    symbol: target.isInbox ? "tray" : "text.alignleft"
+                                ) {
+                                    Task { await store.moveItem(item, toThread: target.id) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            .prefix(7)
-            .map { $0 }
+        }
     }
 
-    private func moveLabel(_ target: Thread) -> String {
-        if target.isInbox, let domain = store.domain(target.domainId) {
-            return "\(target.title) · \(domain.name)"
+    private func moveTargets(in domain: Domain) -> [Thread] {
+        store.threads
+            .filter { $0.domainId == domain.id && $0.id != item.threadId && !$0.isTrashed && $0.archivedAt == nil }
+            .sorted { lhs, rhs in
+                if lhs.isInbox != rhs.isInbox { return !lhs.isInbox }
+                if lhs.position != rhs.position { return lhs.position < rhs.position }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    // MARK: - 快捷时间
+
+    /// 快捷时间作用在哪个日期字段：待办用计划日（没有计划日才算截止日）、日程用开始时间、等待用跟进日。
+    private var quickTimeField: (field: String, label: String)? {
+        switch item.kind {
+        case .task:
+            return item.planDate != nil || item.dueDate == nil ? ("plan_date", "计划日") : ("due_date", "截止日")
+        case .event:
+            return ("start_at", "开始时间")
+        case .wait:
+            return ("follow_up_date", "跟进日")
+        case .direction:
+            return nil
         }
-        return target.title
+    }
+
+    private var quickTimeKey: String? {
+        switch item.kind {
+        case .task:
+            return item.planDate ?? item.dueDate
+        case .event:
+            return item.startAt.map { DayKey.fromIso($0) } ?? item.planDate
+        case .wait:
+            return item.followUpDate
+        case .direction:
+            return nil
+        }
+    }
+
+    /// 日程改期保留原来的时刻与跨度，只挪日期；其余类型直接写日期字段。
+    private func quickTimePatch(_ key: String?) -> [String: Any] {
+        if item.kind == .event {
+            guard let key else { return ["start_at": NSNull(), "end_at": NSNull()] }
+            let (hour, minute) = DayKey.hourMinute(fromIso: item.startAt)
+            let hadTime = item.startAt != nil
+            var patch: [String: Any] = [
+                "start_at": DayKey.iso(key: key, hour: hadTime ? hour : 9, minute: hadTime ? minute : 0),
+            ]
+            if let end = item.endAt, let start = item.startAt {
+                let span = DayKey.dayOffset(DayKey.fromIso(end), from: DayKey.fromIso(start)) ?? 0
+                let (endHour, endMinute) = DayKey.hourMinute(fromIso: end)
+                patch["end_at"] = DayKey.iso(key: DayKey.add(days: span, to: key), hour: endHour, minute: endMinute)
+            }
+            return patch
+        }
+        guard let field = quickTimeField?.field else { return [:] }
+        if let key { return [field: key] }
+        return [field: NSNull()]
     }
 
     private func run(_ operation: @escaping () async -> Void) {

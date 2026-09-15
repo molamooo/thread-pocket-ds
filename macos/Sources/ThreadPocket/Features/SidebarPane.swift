@@ -147,12 +147,19 @@ struct ThreadListView: View {
                 }
                 ForEach(store.visibleThreads) { thread in
                     ThreadRow(thread: thread)
+                        .reorderable(
+                            id: thread.id,
+                            scope: .threads,
+                            order: store.draggableThreadOrder(for: thread),
+                            isEnabled: !thread.isInbox
+                        )
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
         }
         .scrollIndicators(.never)
+        .reorderContainer()
     }
 }
 
@@ -179,6 +186,12 @@ struct ThreadRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(PocketTheme.textPrimary)
                         .lineLimit(1)
+                    if thread.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(PocketTheme.accent)
+                            .help("已置顶")
+                    }
                     if thread.isInbox {
                         Image(systemName: "tray")
                             .font(.system(size: 9.5, weight: .semibold))
@@ -269,6 +282,14 @@ struct ThreadRow: View {
                     ItemEditorPanel(thread: thread, item: nil, onClose: { overlay.dismissPanel() })
                         .environmentObject(store)
                         .environmentObject(overlay)
+                }
+            }
+            if !thread.isInbox {
+                ContextMenuItem(
+                    label: thread.isPinned ? "取消置顶" : "置顶",
+                    symbol: thread.isPinned ? "pin.slash" : "pin"
+                ) {
+                    Task { await store.togglePin(thread) }
                 }
             }
             ContextDivider()

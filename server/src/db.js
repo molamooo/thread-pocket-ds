@@ -26,6 +26,7 @@ create table if not exists threads (
   revision integer not null default 1,
   archived_at text,
   trashed_at text,
+  pinned_at text,
   created_at text not null,
   updated_at text not null
 );
@@ -206,6 +207,9 @@ function migrate(db) {
   const columns = db.prepare("pragma table_info(threads)").all().map((row) => row.name);
   if (!columns.includes("revision")) {
     db.exec("alter table threads add column revision integer not null default 1");
+  }
+  if (!columns.includes("pinned_at")) {
+    db.exec("alter table threads add column pinned_at text");
   }
 }
 

@@ -40,6 +40,14 @@ struct ContextMenuState: Identifiable {
     var content: AnyView
 }
 
+/// 右键菜单里展开的一级子菜单。level 从 1 开始，逐级向右展开。
+struct SubmenuState: Identifiable {
+    let id = UUID()
+    var level: Int
+    var anchor: CGRect
+    var content: AnyView
+}
+
 struct PanelState: Identifiable {
     let id = UUID()
     var content: AnyView
@@ -63,6 +71,7 @@ struct ConfirmState: Identifiable {
 final class OverlayCenter: ObservableObject {
     @Published var toasts: [Toast] = []
     @Published var contextMenu: ContextMenuState?
+    @Published var submenus: [SubmenuState] = []
     @Published var panel: PanelState?
     @Published var confirmState: ConfirmState?
     @Published var isPalettePresented = false
@@ -87,6 +96,7 @@ final class OverlayCenter: ObservableObject {
 
     func showContextMenu(at point: CGPoint, @ViewBuilder content: () -> some View) {
         withAnimation(PocketMotion.pop) {
+            submenus = []
             contextMenu = ContextMenuState(point: point, content: AnyView(content()))
         }
     }
@@ -94,8 +104,26 @@ final class OverlayCenter: ObservableObject {
     func dismissContextMenu() {
         guard contextMenu != nil else { return }
         withAnimation(PocketMotion.quick) {
+            submenus = []
             contextMenu = nil
         }
+    }
+
+    /// 悬停在某一项上时展开它的子菜单；同一项重复悬停不会重建。
+    func showSubmenu(level: Int, anchor: CGRect, @ViewBuilder content: () -> some View) {
+        if let current = submenus.first(where: { $0.level == level }), current.anchor.equalTo(anchor) {
+            return
+        }
+        withAnimation(PocketMotion.pop) {
+            submenus = submenus.filter { $0.level < level }
+            submenus.append(SubmenuState(level: level, anchor: anchor, content: AnyView(content())))
+        }
+    }
+
+    /// 收起这一级与更深的子菜单（鼠标移到别的项上时）。
+    func clearSubmenus(from level: Int) {
+        guard submenus.contains(where: { $0.level >= level }) else { return }
+        submenus = submenus.filter { $0.level < level }
     }
 
     func presentPanel<Content: View>(@ViewBuilder content: () -> Content) {

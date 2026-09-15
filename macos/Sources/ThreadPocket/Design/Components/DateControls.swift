@@ -118,15 +118,7 @@ struct CalendarPanel: View {
     }
 
     private func nextWeekend() -> String {
-        var candidate = DayKey.today
-        for _ in 0..<14 {
-            if let date = DayKey.date(from: candidate) {
-                let weekday = DayKey.calendar.component(.weekday, from: date)
-                if weekday == 7 { return candidate }
-            }
-            candidate = DayKey.add(days: 1, to: candidate)
-        }
-        return DayKey.add(days: 6)
+        DayKey.weekend
     }
 
     private func shift(months: Int) {

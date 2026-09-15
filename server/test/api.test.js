@@ -443,6 +443,100 @@ describe("总览视图", () => {
   });
 });
 
+describe("排序与置顶", () => {
+  let domainId;
+  const created = [];
+
+  before(async () => {
+    const domain = await api("/api/v1/domains", { method: "POST", body: { name: "排序领域" } });
+    domainId = domain.body.domain.id;
+    for (const title of ["第一条", "第二条", "第三条"]) {
+      const res = await api("/api/v1/threads", { method: "POST", body: { domain_id: domainId, title } });
+      created.push(res.body.thread);
+    }
+  });
+
+  const orderOfDomain = async () =>
+    (await api(`/api/v1/threads?domain_id=${domainId}`)).body.threads.map((thread) => thread.title);
+
+  it("新建的线索排在最前", async () => {
+    assert.deepEqual(await orderOfDomain(), ["第三条", "第二条", "第一条", "收件箱"]);
+  });
+
+  it("可以按给定顺序重排，未参与排序的线索保持原位", async () => {
+    const byTitle = new Map(created.map((thread) => [thread.title, thread]));
+    const domainThreads = (await api(`/api/v1/threads?domain_id=${domainId}`)).body.threads;
+    const inbox = domainThreads.find((thread) => thread.is_inbox);
+    const res = await api("/api/v1/threads/reorder", {
+      method: "POST",
+      body: { ids: ["第一条", "第二条", "第三条"].map((title) => byTitle.get(title).id) },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.threads.map((thread) => thread.title), ["第一条", "第二条", "第三条"]);
+    assert.deepEqual(await orderOfDomain(), ["第一条", "第二条", "第三条", "收件箱"]);
+    assert.equal(
+      (await api(`/api/v1/threads?domain_id=${domainId}`)).body.threads.find((t) => t.id === inbox.id).position,
+      inbox.position,
+      "收件箱的位置不该被这次排序影响",
+    );
+  });
+
+  it("重排包含不存在的线索时整体不生效", async () => {
+    const before = await orderOfDomain();
+    const res = await api("/api/v1/threads/reorder", {
+      method: "POST",
+      body: { ids: [created[0].id, "th_missing"] },
+    });
+    assert.equal(res.status, 404);
+    assert.deepEqual(await orderOfDomain(), before);
+  });
+
+  it("置顶的线索浮到最前，取消置顶后停在原来的位置", async () => {
+    const target = created[2];
+    const pinned = await api(`/api/v1/threads/${target.id}`, { method: "PATCH", body: { pinned: true } });
+    assert.equal(pinned.status, 200);
+    assert.ok(pinned.body.thread.pinned_at);
+    assert.deepEqual(await orderOfDomain(), ["第三条", "第一条", "第二条", "收件箱"]);
+
+    const unpinned = await api(`/api/v1/threads/${target.id}`, { method: "PATCH", body: { pinned: false } });
+    assert.equal(unpinned.body.thread.pinned_at, null);
+    assert.deepEqual(await orderOfDomain(), ["第三条", "第一条", "第二条", "收件箱"]);
+  });
+
+  it("条目可以在 Thread 内按给定顺序重排", async () => {
+    const threadId = created[0].id;
+    const ids = [];
+    for (const title of ["甲", "乙", "丙"]) {
+      const res = await api(`/api/v1/threads/${threadId}/items`, {
+        method: "POST",
+        body: { kind: "task", title },
+      });
+      ids.push(res.body.item.id);
+    }
+
+    const res = await api("/api/v1/items/reorder", {
+      method: "POST",
+      body: { thread_id: threadId, ids: [ids[2], ids[0], ids[1]] },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.items.map((item) => item.title), ["丙", "甲", "乙"]);
+    assert.deepEqual(
+      res.body.bundle.items.open.map((item) => item.title),
+      ["丙", "甲", "乙"],
+    );
+
+    const other = await api(`/api/v1/threads/${created[1].id}/items`, {
+      method: "POST",
+      body: { kind: "task", title: "别的线索里的条目" },
+    });
+    const mixed = await api("/api/v1/items/reorder", {
+      method: "POST",
+      body: { thread_id: threadId, ids: [other.body.item.id, ids[0]] },
+    });
+    assert.equal(mixed.status, 400, "不允许把别的 Thread 的条目混进同一次排序");
+  });
+});
+
 describe("鉴权", () => {
   it("配置令牌后，无令牌请求被拒绝，带令牌通过", async () => {
     const secured = await listen({ port: 0, host: "127.0.0.1", dbFile: ":memory:", apiKey: "secret-token", logger: { error() {} } });

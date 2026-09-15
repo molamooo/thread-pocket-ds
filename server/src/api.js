@@ -11,8 +11,8 @@ import {
 } from "./util.js";
 import { createRouter } from "./http.js";
 
-// 1.1.0：支持创建条目时指定 id、日志支持 occurred_at（迁移与重放需要）
-export const API_VERSION = "1.1.0";
+// 1.2.0：线索支持置顶与人工排序，条目支持拖动排序
+export const API_VERSION = "1.2.0";
 
 function itemPayload(body) {
   if (body.kind !== undefined) pickEnum(body.kind, "kind", ITEM_KINDS);
@@ -68,6 +68,8 @@ export function createApi({ repo, views, onMutate = null }) {
       "views",
       "search",
       "snapshot",
+      "reorder",
+      "pinning",
     ],
     item_kinds: ITEM_KINDS,
     thread_statuses: THREAD_STATUSES,
@@ -131,6 +133,13 @@ export function createApi({ repo, views, onMutate = null }) {
     }),
   );
 
+  // 人工排序：只改变这些线索之间的相对顺序，其余线索保持原有位置
+  router.post("/api/v1/threads/reorder", (ctx) => {
+    const ids = ctx.body.ids;
+    if (!Array.isArray(ids)) throw badRequest("缺少字段 ids（线程 id 数组，按期望顺序排列）");
+    return mutate({ threads: repo.reorderThreads(ids) });
+  });
+
   router.get("/api/v1/threads/:id", (ctx) => repo.threadBundle(threadIdParam(ctx.params)));
 
   router.get("/api/v1/threads/:id/scope", (ctx) => views.threadScope(ctx.params.id, ctx.query.scope ?? "all"));
@@ -142,6 +151,7 @@ export function createApi({ repo, views, onMutate = null }) {
       status: ctx.body.status === undefined ? undefined : pickEnum(ctx.body.status, "status", THREAD_STATUSES),
       domainId: ctx.body.domain_id ?? undefined,
       position: ctx.body.position ?? undefined,
+      pinned: optionalBool(ctx.body.pinned, "pinned") ?? undefined,
       archived: optionalBool(ctx.body.archived, "archived") ?? undefined,
       trashed: optionalBool(ctx.body.trashed, "trashed") ?? undefined,
       isInbox: ctx.body.is_inbox === undefined ? undefined : Boolean(ctx.body.is_inbox),
@@ -229,6 +239,15 @@ export function createApi({ repo, views, onMutate = null }) {
       statuses: ctx.query.status ? ctx.query.status.split(",") : ["open"],
     }),
   }));
+
+  // 条目排序：同一个 Thread 内，把给出的这些条目按新顺序放回它们原来的位置槽
+  router.post("/api/v1/items/reorder", (ctx) => {
+    const threadId = requireString(ctx.body.thread_id, "thread_id");
+    const ids = ctx.body.ids;
+    if (!Array.isArray(ids)) throw badRequest("缺少字段 ids（条目 id 数组，按期望顺序排列）");
+    const items = repo.reorderItems(threadId, ids);
+    return mutate({ items, bundle: repo.threadBundle(threadId) });
+  });
 
   /* ---------------------------------- notes ---------------------------------- */
 

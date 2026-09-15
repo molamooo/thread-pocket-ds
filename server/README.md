@@ -79,11 +79,15 @@ Domain ──< Thread ──< Item
 | POST | `/api/v1/threads` | 新建（`domain_id`, `title`, `summary`, `is_inbox`） |
 | GET | `/api/v1/threads/:id` | 上下文：thread + items(open/closed) + note + logs |
 | GET | `/api/v1/threads/:id/scope?scope=all\|today\|upcoming\|waiting` | 按时间范围取该 Thread 的事项 |
-| PATCH | `/api/v1/threads/:id` | 改标题 / 当前描述 / 状态 / 归属 / 归档 / 回收 |
+| PATCH | `/api/v1/threads/:id` | 改标题 / 当前描述 / 状态 / 归属 / 置顶(`pinned`) / 归档 / 回收 |
+| POST | `/api/v1/threads/reorder` | 人工排序：`ids` 按期望顺序排列，放回它们原先占据的位置槽 |
 | DELETE | `/api/v1/threads/:id?hard=1` | 默认软删除（回收站），`hard=1` 彻底删除 |
 
 `PATCH` 会按实际变化追加日志：`thread.summary` 记录描述的前后值，`thread.status` 记录状态迁移，
 归档 / 回收 / 恢复也各自留下记录。
+
+列表顺序由人安排：置顶的一组排在最前，其余按 `position` 升序，新线索插在最前。
+顺序与「最近更新」无关，改标题、写日志都不会把线索挪到别处。
 
 ### Item
 
@@ -94,6 +98,7 @@ Domain ──< Thread ──< Item
 | PATCH | `/api/v1/items/:id` | 改标题 / 时间 / 状态 / 受阻标记；改 `thread_id` 等于移动 |
 | POST | `/api/v1/items/:id/move` | 移动到另一个 Thread，返回源与目标的完整上下文 |
 | POST | `/api/v1/items/:id/convert` | 探索方向 → 待办（方向标记为 `converted`，待办记录 `source_id`） |
+| POST | `/api/v1/items/reorder` | 同一 Thread 内的人工排序（`thread_id` + `ids`） |
 | DELETE | `/api/v1/items/:id` | 删除事项 |
 
 新增事项的请求体示例：

@@ -64,6 +64,7 @@ struct ThreadDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.never)
+            .reorderContainer()
 
             Divider().overlay(PocketTheme.stroke)
             progressBar(thread: thread)
@@ -192,6 +193,12 @@ struct ThreadDetailView: View {
                     ContextMenuItem(label: "重命名", symbol: "pencil") {
                         titleDraft = thread.title
                         isRenamingTitle = true
+                    }
+                    ContextMenuItem(
+                        label: thread.isPinned ? "取消置顶" : "置顶",
+                        symbol: thread.isPinned ? "pin.slash" : "pin"
+                    ) {
+                        Task { await store.togglePin(thread) }
                     }
                     ContextDivider()
                     ContextMenuItem(label: "复制当前描述", symbol: "doc.on.doc") {
@@ -322,9 +329,8 @@ struct ThreadDetailView: View {
     // MARK: - 行动
 
     private func actionsSection(thread: Thread) -> some View {
+        // 待办与日程同属「行动」，按人工排定的顺序一起展示，也一起拖动排序。
         let open = store.openItems(for: thread.id).filter { $0.kind.isAction }
-        let tasks = open.filter { $0.kind == .task }
-        let events = open.filter { $0.kind == .event }
         return VStack(alignment: .leading, spacing: 6) {
             SectionHeader(title: "行动", symbol: "checklist", count: open.count, tint: PocketTheme.accent) {
                 presentEditor(thread: thread, kind: .task)
@@ -332,11 +338,8 @@ struct ThreadDetailView: View {
             if open.isEmpty {
                 InlineHint(text: "还没有未结束的行动。明确的下一步就写成待办，固定时间的事写成日程。")
             }
-            ForEach(tasks) { item in
-                ItemRow(item: item, thread: thread)
-            }
-            ForEach(events) { item in
-                ItemRow(item: item, thread: thread)
+            ForEach(open) { item in
+                ItemRow(item: item, thread: thread, dragScope: .items(threadId: thread.id), dragOrder: open.map(\.id))
             }
         }
     }
@@ -359,7 +362,12 @@ struct ThreadDetailView: View {
                 InlineHint(text: "值得继续看、但还没成为承诺的想法放在这里；它们不计入待办数量。")
             }
             ForEach(directions) { item in
-                ItemRow(item: item, thread: thread)
+                ItemRow(
+                    item: item,
+                    thread: thread,
+                    dragScope: .items(threadId: thread.id),
+                    dragOrder: directions.map(\.id)
+                )
             }
         }
     }
@@ -376,7 +384,7 @@ struct ThreadDetailView: View {
                 InlineHint(text: "需要等外部结果，或自己被卡住的行动放在这里，可以设置跟进时间。")
             }
             ForEach(waits) { item in
-                ItemRow(item: item, thread: thread)
+                ItemRow(item: item, thread: thread, dragScope: .items(threadId: thread.id), dragOrder: waits.map(\.id))
             }
         }
     }

@@ -490,8 +490,10 @@ final class WorkspaceStore: ObservableObject {
                 return (items[thread.id] ?? []).contains { $0.title.lowercased().contains(needle) }
             }
             .sorted { lhs, rhs in
+                if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
                 if lhs.isInbox != rhs.isInbox { return !lhs.isInbox }
-                return lhs.updatedAt > rhs.updatedAt
+                if lhs.position != rhs.position { return lhs.position < rhs.position }
+                return lhs.createdAt < rhs.createdAt
             }
     }
 
@@ -788,6 +790,120 @@ final class WorkspaceStore: ObservableObject {
         }
         if selectedThreadID == threadId { selectedThreadID = preferredInitialThread()?.id }
         await refreshOverview()
+    }
+
+    func togglePin(_ thread: Thread) async {
+        let next = !thread.isPinned
+        await perform(next ? "置顶线索" : "取消置顶", successMessage: next ? "已置顶「\(thread.title)」" : "已取消置顶") { client in
+            let response: ThreadMutationResponse = try await client.patch(
+                "/api/v1/threads/\(thread.id)",
+                body: ["pinned": next]
+            )
+            upsert(thread: response.thread)
+        }
+    }
+
+    // MARK: - 拖动排序
+
+    /// 拖动的范围：线索列表或某条线索内的条目。
+    enum DragScope: Equatable {
+        case threads
+        case items(threadId: String)
+    }
+
+    private struct DragState {
+        var scope: DragScope
+        var id: String
+        var order: [String]
+        var original: [String]
+    }
+
+    @Published private(set) var draggingId: String?
+    private var dragState: DragState?
+
+    /// 线索列表里可以和这条线索互相换位的那一段（同一条置顶分组、都不在收件箱）。
+    func draggableThreadOrder(for thread: Thread) -> [String] {
+        visibleThreads
+            .filter { !$0.isInbox && $0.isPinned == thread.isPinned }
+            .map(\.id)
+    }
+
+    func beginDrag(id: String, scope: DragScope, order: [String]) {
+        guard order.count > 1, order.contains(id) else { return }
+        dragState = DragState(scope: scope, id: id, order: order, original: order)
+        draggingId = id
+    }
+
+    /// 拖过某个条目时先在本地换位；松手时才写回服务端。
+    func dragOver(_ targetId: String) {
+        guard var state = dragState, targetId != state.id else { return }
+        guard let from = state.order.firstIndex(of: state.id),
+              let to = state.order.firstIndex(of: targetId) else { return }
+        var order = state.order
+        let moving = order.remove(at: from)
+        order.insert(moving, at: to)
+        guard order != state.order else { return }
+        state.order = order
+        dragState = state
+        withAnimation(PocketMotion.quick) { applyOrder(order, scope: state.scope) }
+    }
+
+    func endDrag() async {
+        guard let state = dragState else { return }
+        dragState = nil
+        draggingId = nil
+        guard state.order != state.original else { return }
+        switch state.scope {
+        case .threads:
+            await perform("调整顺序") { client in
+                let response: ThreadOrderResponse = try await client.post(
+                    "/api/v1/threads/reorder",
+                    body: ["ids": state.order]
+                )
+                for thread in response.threads { upsert(thread: thread) }
+            }
+        case .items(let threadId):
+            await perform("调整顺序") { client in
+                let response: ItemReorderResponse = try await client.post(
+                    "/api/v1/items/reorder",
+                    body: ["thread_id": threadId, "ids": state.order]
+                )
+                for item in response.items { upsert(item: item) }
+                apply(bundle: response.bundle)
+            }
+        }
+    }
+
+    func cancelDrag() {
+        guard let state = dragState else { return }
+        applyOrder(state.original, scope: state.scope)
+        dragState = nil
+        draggingId = nil
+    }
+
+    /**
+     把 order 里的条目按这个顺序放回它们原先占据的位置槽，其他内容不受影响。
+     服务端用同一套规则，因此本地预览和落库结果一致。
+     */
+    private func applyOrder(_ order: [String], scope: DragScope) {
+        switch scope {
+        case .threads:
+            let slots = order.compactMap { id in threads.first { $0.id == id }?.position }.sorted()
+            guard slots.count == order.count else { return }
+            for (index, id) in order.enumerated() {
+                guard let i = threads.firstIndex(where: { $0.id == id }) else { continue }
+                threads[i].position = slots[index]
+            }
+        case .items(let threadId):
+            guard var list = items[threadId] else { return }
+            let slots = order.compactMap { id in list.first { $0.id == id }?.position }.sorted()
+            guard slots.count == order.count else { return }
+            for (index, id) in order.enumerated() {
+                guard let i = list.firstIndex(where: { $0.id == id }) else { continue }
+                list[i].position = slots[index]
+            }
+            items[threadId] = list.sorted { $0.position < $1.position }
+        }
     }
 
     // MARK: - Domain 操作

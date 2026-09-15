@@ -101,6 +101,7 @@ function summarizeThread(thread) {
     revision: thread.revision,
     open_items: openItems,
     counts,
+    pinned: Boolean(thread.pinned_at),
     archived: thread.archived,
     trashed: Boolean(thread.trashed_at),
     updated_at: thread.updated_at,
@@ -369,7 +370,7 @@ export function createTools({ repo, views }) {
       name: "update_thread",
       title: "更新线索",
       description:
-        "更新标题、当前描述、整体状态、归属 Domain，或归档 / 取消归档。当前描述的修改会在日志里留下前后值。",
+        "更新标题、当前描述、整体状态、归属 Domain、置顶，或归档 / 取消归档。当前描述的修改会在日志里留下前后值。",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -380,6 +381,7 @@ export function createTools({ repo, views }) {
           summary: { type: "string", description: "此刻成立的结论，一两句话；不是清单" },
           status: { type: "string", enum: THREAD_STATUSES, description: "进行中 / 等待中 / 暂停 / 完成" },
           domain: { type: "string", description: "移动到的 Domain 名称或 id" },
+          pinned: { type: "boolean", description: "置顶会把它排到线索列表最前，与是否完成无关" },
           archived: { type: "boolean", description: "归档表示暂时移出日常视野，与是否完成无关" },
           expected_revision: { type: "number", description: "可选：读到的 revision，不一致时拒绝写入" },
         },
@@ -401,6 +403,7 @@ export function createTools({ repo, views }) {
           if (!domain) throw new ToolError(`找不到 Domain：${args.domain}`);
           patch.domainId = domain.id;
         }
+        if (args?.pinned !== undefined) patch.pinned = Boolean(args.pinned);
         if (args?.archived !== undefined) patch.archived = Boolean(args.archived);
         if (Object.keys(patch).length === 0) throw new ToolError("没有需要更新的字段");
         repo.updateThread(threadId, patch);
