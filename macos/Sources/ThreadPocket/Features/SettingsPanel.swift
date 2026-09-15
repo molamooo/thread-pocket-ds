@@ -248,6 +248,8 @@ struct OnboardingCard: View {
     enum ProbeState: Equatable {
         case idle
         case testing
+        /// 地址是通的，但这个部署要求登录：引导卡片直接给出登录入口，而不是把用户卡在这里
+        case needsLogin
         case failure(String)
     }
 
@@ -303,6 +305,16 @@ struct OnboardingCard: View {
                         .transition(.opacity)
                 }
 
+                if case .needsLogin = state {
+                    VStack(alignment: .leading, spacing: 4) {
+                        PocketTag(label: "这个部署需要登录", symbol: "person.badge.key.fill", tint: PocketTheme.warning)
+                        Text("地址已经记下了。点「使用浏览器登录」完成授权，之后不用再登。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(PocketTheme.textTertiary)
+                    }
+                    .transition(.opacity)
+                }
+
                 HStack(spacing: 8) {
                     PocketButton(label: "先看看演示界面", kind: .ghost, action: onSkip)
                     Spacer()
@@ -314,8 +326,19 @@ struct OnboardingCard: View {
                                 .foregroundStyle(PocketTheme.textSecondary)
                         }
                     }
-                    PocketButton(label: "连接并开始", symbol: "arrow.right", kind: .primary, isEnabled: state != .testing) {
-                        Task { await connect() }
+                    if case .needsLogin = state {
+                        PocketButton(
+                            label: store.isSigningIn ? "等待浏览器…" : "使用浏览器登录",
+                            symbol: "safari",
+                            kind: .primary,
+                            isEnabled: !store.isSigningIn
+                        ) {
+                            Task { await signIn() }
+                        }
+                    } else {
+                        PocketButton(label: "连接并开始", symbol: "arrow.right", kind: .primary, isEnabled: state != .testing) {
+                            Task { await connect() }
+                        }
                     }
                 }
             }
@@ -354,11 +377,34 @@ struct OnboardingCard: View {
         settings.token = token.trimmed
         await store.connect()
         if store.connection.isOnline {
-            settings.hasOnboarded = true
-            overlay.toast("已连接到 \(store.serverLabel)", tone: .success)
-            onFinish()
-        } else {
-            state = .failure(store.connection.label)
+            finish()
+            return
         }
+        // 服务端要求登录时不要把用户卡在引导页：地址已经存下了，这里直接给出登录入口
+        if store.authState == .signedOut || isExpired {
+            state = .needsLogin
+            return
+        }
+        state = .failure(store.connection.label)
+    }
+
+    private func signIn() async {
+        await store.signIn()
+        if store.connection.isOnline {
+            finish()
+        } else if case .expired(let reason) = store.authState {
+            state = .failure(reason)
+        }
+    }
+
+    private func finish() {
+        settings.hasOnboarded = true
+        overlay.toast("已连接到 \(store.serverLabel)", tone: .success)
+        onFinish()
+    }
+
+    private var isExpired: Bool {
+        if case .expired = store.authState { return true }
+        return false
     }
 }
