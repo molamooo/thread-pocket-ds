@@ -248,6 +248,85 @@ describe("笔记与日志", () => {
       assert.ok(logs[i - 1].created_at >= logs[i].created_at);
     }
   });
+
+  it("可以补记历史日志：保留发生时间，但不把线索排到列表后面", async () => {
+    const before = (await api(`/api/v1/threads/${threadId}`)).body.thread.updated_at;
+    const res = await api(`/api/v1/threads/${threadId}/logs`, {
+      method: "POST",
+      body: { text: "半年前的判断", occurred_at: "2026-03-01T02:00:00.000Z", actor: "agent", kind: "operation" },
+    });
+    assert.equal(res.status, 200);
+    const backfilled = res.body.logs.find((log) => log.text === "半年前的判断");
+    assert.equal(backfilled.created_at, "2026-03-01T02:00:00.000Z");
+    assert.equal(backfilled.actor, "agent");
+    assert.equal(backfilled.kind, "operation");
+
+    const after = (await api(`/api/v1/threads/${threadId}`)).body.thread.updated_at;
+    assert.ok(after >= before, "Thread 的更新时间应该还是刚才，而不是被旧日志拖回去");
+  });
+
+  it("拒绝非法的 occurred_at", async () => {
+    const res = await api(`/api/v1/threads/${threadId}/logs`, {
+      method: "POST",
+      body: { text: "x", occurred_at: "不是时间" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("可以删除单条日志", async () => {
+    const created = await api(`/api/v1/threads/${threadId}/logs`, {
+      method: "POST",
+      body: { text: "这条会被删掉" },
+    });
+    const entry = created.body.logs.find((log) => log.text === "这条会被删掉");
+    assert.ok(entry);
+
+    const deleted = await api(`/api/v1/logs/${entry.id}`, { method: "DELETE" });
+    assert.equal(deleted.status, 200);
+
+    const after = (await api(`/api/v1/threads/${threadId}/logs`)).body.logs;
+    assert.ok(!after.some((log) => log.id === entry.id));
+  });
+});
+
+describe("迁移兼容", () => {
+  let domainId;
+  let threadId;
+
+  before(async () => {
+    const domain = await api("/api/v1/domains", { method: "POST", body: { name: "迁移兼容" } });
+    domainId = domain.body.domain.id;
+    const thread = await api("/api/v1/threads", {
+      method: "POST",
+      body: { domain_id: domainId, title: "带稳定 id 的线索" },
+    });
+    threadId = thread.body.thread.id;
+  });
+
+  it("创建条目时可以指定 id，便于迁移重放", async () => {
+    const created = await api(`/api/v1/threads/${threadId}/items`, {
+      method: "POST",
+      body: { id: "86cdeaa1-4785-449e-a57c-cadabab19b08", kind: "task", title: "保留原 id 的待办" },
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.item.id, "86cdeaa1-4785-449e-a57c-cadabab19b08");
+  });
+
+  it("重复 id 会冲突，重放时据此跳过", async () => {
+    const again = await api(`/api/v1/threads/${threadId}/items`, {
+      method: "POST",
+      body: { id: "86cdeaa1-4785-449e-a57c-cadabab19b08", kind: "task", title: "重复" },
+    });
+    assert.equal(again.status, 409);
+  });
+
+  it("拒绝不安全的 id", async () => {
+    const bad = await api(`/api/v1/threads/${threadId}/items`, {
+      method: "POST",
+      body: { id: "有中文的 id", kind: "task", title: "x" },
+    });
+    assert.equal(bad.status, 400);
+  });
 });
 
 describe("总览视图", () => {

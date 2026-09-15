@@ -704,11 +704,12 @@ export function createRepository(db) {
 
   /* ----------------------------------- logs ----------------------------------- */
 
-  function addProgressNote(threadId, text, { actor = "user", meta = null, kind = "progress" } = {}) {
+  function addProgressNote(threadId, text, { actor = "user", meta = null, kind = "progress", occurredAt = null } = {}) {
     getThreadRowOrThrow(threadId);
-    const stamp = nowIso();
-    addLog(threadId, { kind, action: "progress.note", text, meta, actor, at: stamp });
-    touch(threadId, stamp);
+    // 历史补记：日志用发生时间，但 Thread 的更新时间仍然是「现在」，
+    // 否则一条旧日志会把整条线索排到列表很后面。
+    addLog(threadId, { kind, action: "progress.note", text, meta, actor, at: occurredAt ?? nowIso() });
+    touch(threadId);
     return q.logsByThread.all(threadId, 200).map(serializeLog);
   }
 
@@ -777,6 +778,7 @@ export function createRepository(db) {
     addProgressNote,
     listLogs,
     addLog,
+    deleteLog,
     snapshot,
     search,
     revisionOf,

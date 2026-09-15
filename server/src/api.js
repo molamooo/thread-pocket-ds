@@ -11,11 +11,14 @@ import {
 } from "./util.js";
 import { createRouter } from "./http.js";
 
-export const API_VERSION = "1.0.0";
+// 1.1.0：支持创建条目时指定 id、日志支持 occurred_at（迁移与重放需要）
+export const API_VERSION = "1.1.0";
 
 function itemPayload(body) {
   if (body.kind !== undefined) pickEnum(body.kind, "kind", ITEM_KINDS);
   return {
+    // 允许调用方指定 id：迁移与重放时可以保持稳定标识
+    id: body.id === undefined ? null : requireString(body.id, "id", { max: 64 }),
     kind: body.kind,
     title: body.title === undefined ? null : requireString(body.title, "title", { max: 500 }),
     detail: optionalString(body.detail ?? null, "detail", { max: 8000 }),
@@ -243,9 +246,14 @@ export function createApi({ repo, views, onMutate = null }) {
   }));
 
   router.post("/api/v1/threads/:id/logs", (ctx) => {
-    const text = requireString(ctx.body.text, "text", { max: 4000 });
+    const text = requireString(ctx.body.text, "text", { max: 8000 });
     const kind = ctx.body.kind === "operation" ? "operation" : "progress";
-    const logs = repo.addProgressNote(ctx.params.id, text, { kind, actor: ctx.body.actor ?? "user" });
+    const occurredAt = optionalDateTime(ctx.body.occurred_at, "occurred_at");
+    const logs = repo.addProgressNote(ctx.params.id, text, {
+      kind,
+      actor: ctx.body.actor ?? "user",
+      occurredAt,
+    });
     return mutate({ logs });
   });
 
